@@ -1,0 +1,14 @@
+#pragma once
+
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+esp_err_t usb_host_service_start(void);
+esp_err_t usb_host_service_power_on(void);
+
+#ifdef __cplusplus
+}
+#endif

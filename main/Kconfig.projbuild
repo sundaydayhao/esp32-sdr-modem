@@ -1,0 +1,23 @@
+menu "PSK receiver hotspot"
+    config PSK_AP_SSID
+        string "Wi-Fi hotspot name"
+        default "ESP32-SDR"
+    config PSK_AP_PASSWORD
+        string "WPA2 password (8 to 63 characters)"
+        default "pskmodem32"
+    config PSK_AP_CHANNEL
+        int "Wi-Fi channel"
+        range 1 13
+        default 6
+endmenu
+
+menu "RTL-SDR USB receiver"
+    config RTLSDR_NUM_TRANSFERS
+        int "Concurrent USB bulk transfers"
+        range 4 16
+        default 8
+    config RTLSDR_BULK_TRANSFER_SIZE
+        int "Bulk transfer bytes (multiple of 512)"
+        range 4096 8192
+        default 8192
+endmenu
