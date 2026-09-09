@@ -6,6 +6,7 @@
 #include "audio_input.h"
 #include "transport.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -200,11 +201,29 @@ static void enqueue_record(voice_record_t *r, uint32_t epoch)
 }
 static void codec_task(void *arg)
 {
-    struct CODEC2 *codec = arg;
-    uint32_t epoch = UINT32_MAX;
+    const TaskHandle_t waiter = (TaskHandle_t)arg;
+    /* The analysis-window FFT alone uses 8 KiB of automatic arrays. Create
+     * Codec2 on its 24 KiB owner stack, never on app_main's 8 KiB stack. */
+    struct CODEC2 *codec = codec2_create(CODEC2_MODE_700C);
+    esp_err_t init_result = codec ? ESP_OK : ESP_ERR_NO_MEM;
+    if (codec && (codec2_samples_per_frame(codec) != VOICE_FRAME_SAMPLES ||
+                  codec2_bits_per_frame(codec) != VOICE_FRAME_BITS)) {
+        init_result = ESP_ERR_INVALID_SIZE;
+    }
+    if (init_result != ESP_OK) {
+        if (codec) codec2_destroy(codec);
+        xTaskNotify(waiter, (uint32_t)init_result, eSetValueWithOverwrite);
+        vTaskDelete(NULL);
+        return;
+    }
+    portENTER_CRITICAL(&s_lock); s_status.codec_ready = true; portEXIT_CRITICAL(&s_lock);
+    ESP_LOGI("voice", "Codec2 initialized on owner task; stack free minimum=%u bytes",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    uint32_t epoch = session_get().epoch;
     voice_record_t pending = {0};
     voice_playout_t playout;
     voice_playout_reset(&playout);
+    xTaskNotify(waiter, ESP_OK, eSetValueWithOverwrite);
     for (;;) {
         const session_t s = session_get();
         if (s.epoch != epoch) {
@@ -295,20 +314,20 @@ bool content_play_audio(void)
 }
 esp_err_t content_service_init(void)
 {
-    s_packets = xQueueCreate(32, sizeof(packet_item_t)); /* covers initial modem training */
-    s_input = xQueueCreate(8, sizeof(pcm_item_t));
-    s_records = xQueueCreate(8, sizeof(record_item_t));
-    s_output = xQueueCreate(4, sizeof(pcm_item_t));
+    /* These queues carry copies between tasks, never DMA or ISR buffers. */
+    const UBaseType_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    s_packets = xQueueCreateWithCaps(32, sizeof(packet_item_t), caps); /* covers initial modem training */
+    s_input = xQueueCreateWithCaps(8, sizeof(pcm_item_t), caps);
+    s_records = xQueueCreateWithCaps(8, sizeof(record_item_t), caps);
+    s_output = xQueueCreateWithCaps(4, sizeof(pcm_item_t), caps);
     if (!s_packets || !s_input || !s_records || !s_output) return ESP_ERR_NO_MEM;
-    struct CODEC2 *codec = codec2_create(CODEC2_MODE_700C);
-    if (!codec) return ESP_ERR_NO_MEM;
-    if (codec2_samples_per_frame(codec) != VOICE_FRAME_SAMPLES || codec2_bits_per_frame(codec) != VOICE_FRAME_BITS) {
-        codec2_destroy(codec); return ESP_ERR_INVALID_SIZE;
+    if (xTaskCreatePinnedToCore(codec_task, "codec2", 24576,
+                              xTaskGetCurrentTaskHandle(), 6, NULL, 1) != pdPASS) {
+        return ESP_ERR_NO_MEM;
     }
-    s_status.codec_ready = true;
-    if (xTaskCreatePinnedToCore(codec_task, "codec2", 24576, codec, 6, NULL, 1) != pdPASS) {
-        codec2_destroy(codec); return ESP_ERR_NO_MEM;
-    }
+    uint32_t init_result = ESP_FAIL;
+    xTaskNotifyWait(0, UINT32_MAX, &init_result, portMAX_DELAY);
+    if (init_result != ESP_OK) return (esp_err_t)init_result;
     ESP_LOGI("voice", "Codec2 700C ready: 8 kHz, 320 samples / 28 bits; no UART module");
     return ESP_OK;
 }

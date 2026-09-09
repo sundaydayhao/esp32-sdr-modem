@@ -28,7 +28,7 @@ USB 回调只复制到预分配的 IQ 池，DSP 在独立任务中执行。16 �
 
 控制传输使用持续存活的 transfer 和完成上下文。发生超时或拔插时，只有确认回调/在途请求完成后才能释放；无法排空时保留上下文并显示错误。驱动错误后可拔出、重新插入接收棒恢复枚举。
 
-`audio_task` 继续独占数字模式状态；`tx_task` 继续独占 DAC。启用 SDR 时不会把 ADC 麦克风误作射频音频，且拒绝进入调制解调器发射。关闭 SDR 后恢复原有线路音频及 PTT。音量和监听开关不触发重新调谐。
+`audio_task` 继续独占数字模式状态；`tx_task` 继续独占 DAC。启用 SDR 时不会把 ADC 麦克风误作射频音频。显式选择 Tx、按下 PTT 或串口请求 TX 时，在服务锁内关闭 SDR 输入、更新 generation 并保留 TX 互锁，随后启动线路音频会话；录制 IQ 期间拒绝此切换。TX 或语音排空期间仍拒绝重新开启 SDR。返回 Rx 后保持线路音频，需在 RF 页重新启用 SDR input 并 Apply 才恢复射频接收。仅切换页面不会改变输入。Modem 页底部显示输入来源、切换方法和录制互锁原因。音量和监听开关不触发重新调谐。
 
 ## 解调和短波输入
 
@@ -55,7 +55,7 @@ OOK 页面输出原始脉冲宽度及帧计数，未加入具体厂商设备协�
 
 Flash 内部格式为 `SDR2`、32 字节大端头和 CU8 数据，CRC-32 覆盖头的前 28 字节及全部 IQ。头内包括长度、RF、本振、前端、采样率和断样计数。重启只恢复长度/范围/CRC 都有效的记录；对非空损坏文件系统不自动格式化。空白的新数据分区可初始化。
 
-下载时拆成标准 SigMF `cu8` 数据和 JSON 元数据，内部头不混入 IQ。新版分区表添加 `sdr_store`，偏移 `0x420000`、大小 `0x180000`，没有在本次工作中烧录或修改设备 Flash。
+下载时拆成标准 SigMF `cu8` 数据和 JSON 元数据，内部头不混入 IQ。新版分区表添加 `sdr_store`，偏移 `0x420000`、大小 `0x180000`；移植阶段未烧录，首次上板记录见下文。
 
 ## 界面与 API
 
@@ -90,8 +90,52 @@ LCD 默认打开 SDR 接收台，保留 Modem/Codec2 页面和返回 RF 按钮�
 
 2026-09-09 最终 ESP-IDF 5.5.5 / ESP32-P4 构建通过，应用镜像为 1,797,568 字节，4 MiB 应用分区剩余约 57%。LCD 预览的 SSB、ADS-B 和 FM 页面已进行图像检查，截图位于 `docs/screenshots/`，均为标注的主机测试画面。
 
+## 2026-09-09 首次上板与启动修复
+
+通过 COM21 识别到 ESP32-P4 芯片 v3.2、16 MiB Flash、32 MiB PSRAM，LCD 为 1024×600 / EK79007，触摸为 GT911。使用 ESP-IDF 5.5.5 编译，并烧入 bootloader、分区表和应用；未全片擦除，也未重刷 C6。用户确认本次没有 RTL-SDR 接收棒。
+
+原始提交 `31f2ce419dfe1d62055f31ffedfe9a49f241f389` 上板后持续重启：36.1 秒内记录到 15 次 panic，间隔约 2.4 秒，未执行到应用启动完成。基线日志为 `build/sdr-hardware-baseline-20260909.log`，ELF 标识 `debffcafd`。
+
+修复的启动问题：
+
+1. `content_service_init()` 在 8 KiB 主任务栈调用 `codec2_create()`；`make_analysis_window()` 的两个 512 点复数局部数组已占满 8 KiB，随后在 `kf_work()` / 中断入口触发栈保护。改由现有 24 KiB Codec2 任务创建并校验实例，通知主任务初始化结果；Codec2 原始源码未修改。
+2. 内部 SRAM 被可放到外部内存的软件对象占用，导致 SDR 分配或 Wi-Fi 启动任务创建返回 `ESP_ERR_NO_MEM`。启用 Codec2 上游 `__EMBEDDED__` 选项，将约 80 KiB 只读码本留在 Flash，并用项目 allocator 将 Codec2 工作区放在 PSRAM。通用分配优先 PSRAM，应用的任务间队列显式使用 PSRAM；DMA、任务栈和热路径中显式要求内部内存的对象保持内部。启动结束后主任务返回，释放其栈。
+3. P4 SPM 符合 `MALLOC_CAP_INTERNAL`，但 IDF 5.5.5 的 Flash cache guard 不接受该区域的任务栈；`rx_ap_start` 在 NVS 初始化时触发 `esp_task_stack_is_sane_cache_disabled()` 断言。Wi-Fi 初始化和 IQ 存储任务改为显式申请 DRAM 栈，不修改共享 SDK，也不关闭断言。
+
+持续观察工具 `tools/observe_board_stability.py` 使用实际串口，保存原始日志、带相对时间的日志和 JSON 摘要；每 15 秒请求 `STATUS` / `RXDIAG`。`--exercise-codec` 在接收状态执行 36 次 Text/Image/Audio 切换；`--reset` 表示测试开始时主动复位一次，报告区分这次复位与后续异常启动。每次使用新标签以保留旧证据，例如在 IDF 环境中运行：
+
+```powershell
+python tools/observe_board_stability.py --port COM21 --seconds 600 --label sdr-stability-run1 --reset --exercise-codec
+```
+
+启动稳定性验收时烧录镜像为 `build-sdr/esp32_sdr_modem.bin`，1,797,872 字节，SHA-256 `01f77ea7e16538aba21b62605a9cc44601353bf6dcfdc06dcf486bc936e8fcc4`；设备启动报告的 ELF SHA-256 前缀为 `1b13346f7`。后续 Tx 操作修复的镜像和验证单独记录如下。
+
+2026-09-09 10:52:20～11:02:20（UTC+8）的连续实机观察持续 600.125 秒：仅有开头的一次主动 USB 复位，应用启动一次，panic / abort / 看门狗告警 / 自发重启均为 0。36 条自动内容切换命令全部得到确认，40 次 `STATUS` / `RXDIAG` 均正常；日志另记录到 3 次非脚本配置变化，总计 40 个配置会话。Codec2 始终 ready，初始化栈余量为 14,616 字节。40 个内存样本中的内部可用堆恒为 77,651 字节，最大内部块恒为 31,744 字节；PSRAM 约 28.32 MB。
+
+证据保存于 `build/sdr-hardware-acceptance-20260909.{log,timestamped.log,json}`；本轮最终构建与烧录日志为 `build/sdr-hardware-queues-{build,flash}-20260909.log`。`run_sdr_checks.py`、启用嵌入式码本配置的 `run_voice_checks.py --sdr`、content/rate/RsID 和生产 LVGL 主机检查均通过；这些主机检查仍不能替代物理 RF / 空口测试。
+
+连续观察后又执行两次主动 USB 复位，各观察约 45 秒；两次均只有一次预期启动，应用和热点正常启动，各收到 3 次状态及内存诊断，工具判定通过，无 panic 或额外重启。日志与 JSON 为 `build/sdr-hardware-repeat-{1,2}-20260909.*`。这属于主动复位验证，未进行断电冷启动测试。测试结束已关闭本次串口会话，板子保留修复版固件并继续运行。
+
+本次仍观察到两项非致命告警：`sdr_store` SPIFFS 挂载失败且分区非空，程序按设计保留内容，当前 IQ Flash 存储不可用；C6 报告版本 `0.0.0` 与主机 `2.12.0` 不匹配，但本轮热点成功启动。未进行格式化、C6 升级或真实录制验证。由于没有接收棒，持续观察中 IQ/PCM 样本数为 0，本结论仅覆盖无接收棒待机、配置切换和启动稳定性，不覆盖 USB bulk 缓冲分配、RF 持续流或满负载性能。
+
+## Modem 页 Tx 切换修复（2026-09-09）
+
+实机复现日志 `build/sdr-tx-baseline-20260909.log` 显示：默认 SDR 输入开启，进入 Modem 页后请求 `ROLE TX` 被旧互锁拒绝，状态仍为 Rx。服务现将显式 TX/PTT 请求视为切换到线路音频，在同一把锁内关闭 SDR 输入、递增 generation 并保留 TX 互锁；IQ 录制期间仍拒绝切换。LCD 底部增加输入来源、操作方法和录制互锁提示。
+
+本次镜像为 1,799,168 字节，SHA-256 `bcdac072b423e6fb09ef09063b75725552939be2618cd406876f769ead9b504a`，已通过 COM21 烧录同一块 ESP32-P4 rev v3.2（MAC `e8:f6:0a:e7:72:4b`）。构建、烧录与生产 LVGL 检查日志分别为 `build/sdr-tx-{build,flash,lcd-check}-20260909.log`。LVGL 检查覆盖导航不改输入、Tx 下拉事件、输入提示更新、返回 RF 后复选框同步和录制提示；服务状态由主机桩提供，不代表真实 USB 录制。
+
+`tools/check_board_tx.py` 通过真实串口发起与触屏共用的控制事件，检查输入来源、实际 TX 活跃状态、返回 RX 后输出停止、Codec2 会话内编码计数推进，以及 panic/异常重启/语音排空超时。每次 `--reset` 含一次主动 USB 复位，退出时恢复 Rx。例如：
+
+```powershell
+python tools/check_board_tx.py --port COM21 --content AUDIO --cycles 5 --reset --label tx-audio-run1
+```
+
+三组实机验收全部通过：Audio 5 轮 / 109.531 秒、Text 3 轮 / 69.125 秒、Image 3 轮 / 69.204 秒，共 11 轮 Tx/Rx 切换。每组仅有一次预期主动启动、一次 SDR 到线路音频切换；panic、意外重启、语音排空超时均为 0。每轮 Audio 在同一会话内编码计数由约 89～90 帧推进到 157～160 帧。33 个诊断样本的内部空闲堆均为 77,635 字节、最大块均为 31,744 字节。测试结束状态为 Image / Rx、TX inactive、输出队列为空，串口已关闭。
+
+验收证据为 `build/sdr-tx-audio-verified-20260909.{log,json}`、`build/sdr-tx-text-20260909.{log,json}`、`build/sdr-tx-image-20260909.{log,json}`。首次 Audio 脚本误将每会话清零的计数器当成累计计数，产生 `sdr-tx-audio-20260909` 失败记录；修正为比较同一 TX 会话内的两次计数后完成上述验收。这些测试未接 RTL-SDR 棒，也未接对端进行音频/空口互通，不能证明真实 IQ 录制、USB 满负载或端到端收发质量。
+
 ## 尚需硬件验收
 
-本次没有烧录新固件，也没有把主机合成 IQ 当作真实接收棒测试。需要在实际 P4 和指定接收棒上检查 USB 枚举、V4/Direct-Q/变频器调谐、USB 拔插、2 MS/s 连续流、SSB 听感与频偏、真实 ADS-B、Flash 保存恢复，以及 LCD/Wi-Fi/录制并行时的内存和持续丢样。
+本次上板未接接收棒，没有把主机合成 IQ 当作真实接收测试。仍需在实际 P4 和指定接收棒上检查 USB 枚举、V4/Direct-Q/变频器调谐、USB 拔插、2 MS/s 连续流、SSB 听感与频偏、真实 ADS-B、Flash 保存恢复，以及 LCD/Wi-Fi/录制并行时的内存和持续丢样。
 
 短波链路仍需真实电台和 fldigi 双向音频验证。MFSK16 完整收发、Olivia、FreeDV 700D/700E、宽带立体声/RDS、已命名传感器协议、SD 卡长时间 IQ 录制等不在当前已实现列表中。

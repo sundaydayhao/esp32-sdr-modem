@@ -208,6 +208,32 @@ int main(void)
     for(unsigned n=0;n<64;++n)mock_sdr.waveform[n]=(int16_t)(18000*sin(2*3.141592653589793*n/24));
     sdr_display_render(&state);assert(!lv_obj_has_flag(wave_chart,LV_OBJ_FLAG_HIDDEN));screenshot("lcd-sdr-fm.ppm");
     back(NULL);assert(lv_screen_active()==modem_screen);
+    /* Navigation keeps SDR RX; the modem page explains the TX handoff.
+     * These checks exercise the production widgets with mocked service state;
+     * physical serial tests separately exercise audio_task and the real gate. */
+    assert(mock_sdr.config.enabled);
+    display_render(&state,&spectrum);pump();
+    assert(strstr(lv_label_get_text(s_input_hint),"Tx / PTT switches to line audio"));
+    assert(lv_obj_get_y(s_input_hint)+lv_obj_get_height(s_input_hint)<=600);
+    screenshot("lcd-modem-sdr-input.ppm");
+    select_option(s_role_dropdown,1);
+    assert(display_take_role_selection(&role)&&role==1);
+    mock_sdr.config.enabled=false;mock_sdr.tx_busy=true;++mock_sdr.generation;
+    state.display_role=1;display_render(&state,&spectrum);
+    assert(lv_dropdown_get_selected(s_role_dropdown)==1);
+    assert(strstr(lv_label_get_text(s_input_hint),"Input: line audio."));
+    screenshot("lcd-modem-line-tx.ppm");
+    select_option(s_role_dropdown,0);
+    assert(display_take_role_selection(&role)&&role==0);
+    state.display_role=0;mock_sdr.tx_busy=false;display_render(&state,&spectrum);
+    assert(!mock_sdr.config.enabled);
+    sdr_display_open();sdr_display_render(&state);
+    assert(!lv_obj_has_state(enabled,LV_STATE_CHECKED));
+    mock_sdr.config.enabled=true;mock_sdr.recording=true;++mock_sdr.generation;
+    back(NULL);display_render(&state,&spectrum);
+    assert(strstr(lv_label_get_text(s_input_hint),"stop recording in RF before Tx / PTT"));
+    screenshot("lcd-modem-recording-block.ppm");
+    puts("PASS modem input UI: navigation preserves RF, Tx hint/state, return to line Rx, recording warning");
     puts("PASS SDR UI: navigation, HF validation, mode presets, direct decode and ADS-B controls");
     return 0;
 }

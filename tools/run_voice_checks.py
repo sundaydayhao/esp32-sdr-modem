@@ -22,6 +22,9 @@ exe = root/('build/host-tools/host_sdr_voice_check.exe' if is_sdr else 'build/ho
 exe.parent.mkdir(parents=True, exist_ok=True)
 cmd = ['C:/cygwin64/bin/gcc.exe','-std=gnu11','-O2','-g','-ffunction-sections','-fdata-sections',
        '-DCODEC2_MODE_EN_DEFAULT=0','-DCODEC2_MODE_700C_EN=1',
+       # Match the firmware's immutable embedded codebooks; use libc for the
+       # upstream allocator hooks on the host, where ESP-IDF PSRAM is absent.
+       '-D__EMBEDDED__','-Dcodec2_malloc=malloc','-Dcodec2_calloc=calloc','-Dcodec2_free=free',
        '-I'+str(c2/'vendor/src'),'-I'+str(c2/'include'),'-Imain','-Icomponents/psk_rtty/include',
        *sources,'-Wl,--gc-sections','-lm','-o',str(exe)]
 subprocess.run(cmd,check=True)

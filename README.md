@@ -26,7 +26,7 @@
 3. 接收短波时选择 USB 或 LSB，输入 RF 频率，并按下表选择短波输入方式，点击 **Apply**。
 4. 勾选 **Modem decode**，在 **Modem / Codec2** 页选择数字模式、音频中心和 Text/Image/Audio。SSB PCM 在设备内进入解码器，无需音频线回接。PSK 音频中心可先用 1500～2000 Hz；Codec2 固定 2000 Hz。
 5. 普通 SSB/FM 勾选 **Speaker** 监听。收到 Codec2 时播放解码后的语音。监听音量不影响数字解码输入。
-6. 使用原有麦克风/线路音频或发射时，取消 **SDR input** 并 Apply，再到原有调制解调器页面操作。RTL-SDR 本身只能接收。
+6. Modem / Codec2 页选择 **Tx** 或按住 **PTT** 时，自动关闭 SDR 输入并切到板载麦克风/线路音频。正在录制 IQ 时需先在 RF 页停止录制。页面底部显示当前输入及操作提示；回到 **Rx** 后保持线路音频，要恢复射频接收，在 RF 页勾选 **SDR input** 并 Apply。RTL-SDR 本身只能接收。
 
 | RF 输入 | 短波方式 |
 | --- | --- |
@@ -65,7 +65,7 @@ node tools/check_sdr_web.cjs
 
 固件在 `build-sdr/esp32_sdr_modem.bin`。Windows 脚本默认使用本机 Espressif 5.5.5 和 Cygwin GCC；其他环境激活 ESP-IDF 后运行 `idf.py -B build-sdr build`。
 
-分区表保留 4 MiB 应用分区，新增 `0x420000` 起的 1.5 MiB `sdr_store`。刷入新固件时需要同步更新分区表。本次修改不执行烧录。
+分区表保留 4 MiB 应用分区，新增 `0x420000` 起的 1.5 MiB `sdr_store`。刷入新固件时需要同步更新分区表。2026-09-09 已完成首次上板和启动故障修复，记录见下方移植说明。
 
 数据流、来源、测试结果和硬件验收事项见 [SDR 移植说明](docs/SDR_PORT.md)。较早的 AP580/PSK 文档与录音保留为历史记录。
 

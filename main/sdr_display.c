@@ -177,6 +177,14 @@ void sdr_display_init(lv_display_t *display)
         .scan_start_hz=88000000,.scan_stop_hz=108000000,.volume=35};
     fill(&initial); lv_screen_load(screen);
 }
+const char *sdr_display_modem_hint(void)
+{
+    sdr_service_get_status(&snapshot);
+    if (snapshot.recording) return "IQ recording: stop recording in RF before Tx / PTT.";
+    if (snapshot.config.enabled) return "Input: RTL-SDR RX. Tx / PTT switches to line audio.";
+    return "Input: line audio. To receive RF, select Rx, then enable SDR input in RF and Apply.";
+}
+
 void sdr_display_render(const display_state_t *state)
 {
     if (!screen || lv_screen_active() != screen) return;
@@ -218,7 +226,7 @@ void sdr_display_render(const display_state_t *state)
         sdr_mode_name(c->mode), snapshot.active_frequency_hz / 1000000.0, sdr_frontend_name(c->frontend),
         c->decode ? psk_mode_name(state->selected_psk_mode) : "Listen / inspect",
         c->decode ? state->text : "Select USB/LSB and Modem decode to feed the digital decoder.",
-        c->enabled ? "RTL-SDR receive only. Disable SDR input to use line audio / TX." : "Line audio input is active.");
+        c->enabled ? "RTL-SDR receive only. Select Tx / PTT in Modem to use line audio." : "Line audio input is active.");
     lv_label_set_text(record_label, snapshot.recording ? "Stop IQ capture" : "Start IQ capture");
     uint32_t center=snapshot.active_frequency_hz,span=snapshot.sample_rate_hz;
     double left=c->mode==SDR_SCANNER?c->scan_start_hz:center-span/2.0;

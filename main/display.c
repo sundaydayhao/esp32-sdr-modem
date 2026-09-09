@@ -13,7 +13,7 @@
 #include "sdr_display.h"
 
 static const char *TAG = "display";
-static lv_obj_t *s_ptt_button, *s_brand;
+static lv_obj_t *s_ptt_button, *s_brand, *s_input_hint;
 
 static void ptt_event_cb(lv_event_t *event);
 static void open_sdr(lv_event_t *event) { (void)event; sdr_display_open(); }
@@ -216,6 +216,7 @@ void display_render(const display_state_t *state, const spectrum_t *spectrum)
 {
     if (!state || !s_waterfall_canvas || !bsp_display_lock(0)) return;
     sdr_display_render(state);
+    lv_label_set_text(s_input_hint, sdr_display_modem_hint());
     const int is_tx = state->display_role != 0;
     if (s_content != state->content_type) {
         s_content = state->content_type;
@@ -435,6 +436,8 @@ static void build_ui(lv_display_t *disp)
     lv_obj_set_pos(s_image_canvas, scale_x(8), scale_y(92));
     lv_obj_add_flag(s_image_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_image_progress, LV_OBJ_FLAG_HIDDEN);
+    s_input_hint = make_label(screen, "", scale_x(22), scale_y(465), scale_x(756),
+                              &lv_font_montserrat_14, lv_color_hex(0x90DACC));
 }
 
 static lv_obj_t *make_dropdown(lv_obj_t *parent, int x, int y, int w, int h, const char *options)

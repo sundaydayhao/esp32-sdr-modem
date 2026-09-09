@@ -13,6 +13,15 @@ does not build FreeDV modems or host command-line programs. The public API is
 per frame. No downloaded binary library, runtime download, or external speech
 module is required to build or run.
 
+The wrapper defines upstream `__EMBEDDED__` so the immutable 700C quantisers
+remain in flash (about 80 KiB) and supplies the allocator hooks in
+`codec2_alloc.c` using PSRAM. Codec2 creation and subsequent session resets run
+on the 24 KiB codec task: `make_analysis_window()` alone has two 512-element
+complex arrays totalling 8 KiB, so creating the codec on the 8 KiB main task
+overflows its stack. The initializer waits for the codec task's result before
+starting the remaining services. The host voice checks use the same embedded
+codebook configuration with libc allocator hooks.
+
 `generated/` contains codebooks produced by the unmodified upstream
 `generate_codebook.c`. They are checked in for reproducible offline cross builds.
 Regenerate them with `python tools/prepare_codec2.py` from the project root

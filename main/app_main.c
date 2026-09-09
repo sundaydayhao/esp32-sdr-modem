@@ -202,11 +202,13 @@ static void apply_control_event(modem_t *modem, const ui_event_t *event)
     if (event->type == UI_EVENT_DISPLAY_ROLE_CHANGED &&
         s_display_role == (event->display_role != 0) &&
         s_settings.enabled == (event->display_role != 0)) return;
-    if ((event->type == UI_EVENT_TX_TEXT ||
-         (event->type == UI_EVENT_DISPLAY_ROLE_CHANGED && event->display_role)) &&
-        !sdr_service_claim_tx()) {
-        ESP_LOGW(TAG, "RTL-SDR is receive-only; disable SDR input before modem TX");
-        return;
+    if (event->type == UI_EVENT_TX_TEXT ||
+        (event->type == UI_EVENT_DISPLAY_ROLE_CHANGED && event->display_role)) {
+        char error[96];
+        if (!sdr_service_claim_tx(error, sizeof(error))) {
+            ESP_LOGW(TAG, "TX blocked: %s", error);
+            return;
+        }
     }
     const bool reconfigure = event->type == UI_EVENT_TX_STOP ||
         event->type == UI_EVENT_DISPLAY_ROLE_CHANGED || event->type == UI_EVENT_CONTENT_CHANGED ||
@@ -272,6 +274,8 @@ static void apply_control_event(modem_t *modem, const ui_event_t *event)
     case UI_EVENT_INPUT_GAIN:
         (void)audio_input_set_gain_db(event->input_gain_db); return;
     case UI_EVENT_RX_DIAG: {
+        ESP_LOGI(TAG, "SDR input=%s generation=%lu", sdr_service_enabled() ? "RTL-SDR" : "line-audio",
+                 (unsigned long)sdr_service_generation());
         psk_rx_debug_t rx_debug;
         psk_rx_debug_snapshot(&modem->decoder.psk_rx, &rx_debug);
         ESP_LOGI(TAG,
@@ -682,10 +686,12 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_input_init());
     ESP_ERROR_CHECK(audio_input_set_gain_db(BOARD_AUDIO_INPUT_GAIN_DB));
 
-    s_decoded_queue = xQueueCreate(8, sizeof(decoded_msg_t));
-    s_control_queue = xQueueCreate(12, sizeof(ui_event_t));
-    s_spectrum_queue = xQueueCreate(1, sizeof(spectrum_msg_t));
-    s_tx_queue = xQueueCreate(1, sizeof(tx_cmd_t));
+    /* Task-to-task copies belong in PSRAM; hardware DMA stays internal. */
+    const UBaseType_t queue_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    s_decoded_queue = xQueueCreateWithCaps(8, sizeof(decoded_msg_t), queue_caps);
+    s_control_queue = xQueueCreateWithCaps(12, sizeof(ui_event_t), queue_caps);
+    s_spectrum_queue = xQueueCreateWithCaps(1, sizeof(spectrum_msg_t), queue_caps);
+    s_tx_queue = xQueueCreateWithCaps(1, sizeof(tx_cmd_t), queue_caps);
     ESP_ERROR_CHECK(content_service_init());
     ESP_ERROR_CHECK(sdr_service_init());
     ESP_ERROR_CHECK(s_decoded_queue && s_control_queue && s_spectrum_queue && s_tx_queue ?
@@ -701,7 +707,10 @@ void app_main(void)
     ESP_ERROR_CHECK(rx_web_start(web_configure_receiver));
     ESP_LOGI(TAG, "ESP32-P4 SDR modem started: RTL-SDR USB Host + Codec2/PSK");
 
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    ESP_LOGI(TAG, "Startup heap: internal=%u DMA=%u largest_DMA=%u PSRAM=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    /* All services have their own tasks. Returning releases the boot stack. */
 }

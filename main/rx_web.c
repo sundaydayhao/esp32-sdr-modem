@@ -290,7 +290,7 @@ static void web_task(void *arg)
     esp_err_t err = start_ap();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "AP startup failed: %s; check C6 ESP-Hosted firmware/SDIO. RX continues.", esp_err_to_name(err));
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -321,7 +321,7 @@ static void web_task(void *arg)
     } else {
         ESP_LOGI(TAG, "AP %s ready; open http://192.168.4.1 on your phone", CONFIG_PSK_AP_SSID);
     }
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 const char *rx_web_boot_id(void) { return s_boot_id; }
@@ -330,6 +330,9 @@ esp_err_t rx_web_start(rx_web_config_cb_t config_cb)
 {
     s_config_cb = config_cb;
     snprintf(s_boot_id, sizeof(s_boot_id), "%08" PRIx32 "%08" PRIx32, esp_random(), esp_random());
-    return xTaskCreatePinnedToCore(web_task, "rx_ap_start", 6144, NULL, 3, NULL, 1) == pdPASS ?
+    /* P4 SPM satisfies INTERNAL but IDF 5.5's flash cache guard rejects an
+     * SPM stack. NVS initialization must run from DRAM (DMA-capable SRAM). */
+    return xTaskCreatePinnedToCoreWithCaps(web_task, "rx_ap_start", 6144, NULL, 3, NULL, 1,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA) == pdPASS ?
         ESP_OK : ESP_ERR_NO_MEM;
 }

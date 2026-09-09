@@ -26,7 +26,9 @@ bool sdr_service_enabled(void);
 bool sdr_service_decode_enabled(void);
 uint32_t sdr_service_generation(void);
 void sdr_service_set_tx_busy(bool busy);
-bool sdr_service_claim_tx(void);
+/* Explicit TX/PTT hands the input to line audio and reserves TX atomically.
+ * Active IQ recording must be stopped first. RX does not re-enable SDR. */
+bool sdr_service_claim_tx(char *error, size_t size);
 size_t sdr_service_read_audio(int16_t *samples, size_t capacity, uint32_t timeout_ms);
 bool sdr_service_play_audio(bool suppress);
 bool sdr_service_record_start(char *error, size_t size);

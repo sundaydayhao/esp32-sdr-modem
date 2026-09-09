@@ -321,12 +321,24 @@ esp_err_t sdr_service_init(void)
         .scan_start_hz = 88000000, .scan_stop_hz = 108000000};
     s_status.generation = s_generation;
     snprintf(s_status.usb_status, sizeof(s_status.usb_status), "USB host starting");
-    s_free = xQueueCreate(IQ_BLOCKS, sizeof(iq_block_t *)); s_iq = xQueueCreate(IQ_BLOCKS, sizeof(iq_block_t *));
-    s_decode = xQueueCreate(32, sizeof(pcm_block_t)); s_monitor = xQueueCreate(32, sizeof(pcm_block_t));
+    /* USB client callbacks and DSP/audio consumers run in task context.
+     * These copied payloads do not need the SRAM reserved for USB DMA. */
+    const UBaseType_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    s_free = xQueueCreateWithCaps(IQ_BLOCKS, sizeof(iq_block_t *), caps);
+    s_iq = xQueueCreateWithCaps(IQ_BLOCKS, sizeof(iq_block_t *), caps);
+    s_decode = xQueueCreateWithCaps(32, sizeof(pcm_block_t), caps);
+    s_monitor = xQueueCreateWithCaps(32, sizeof(pcm_block_t), caps);
     iq_block_t *pool = heap_caps_calloc(IQ_BLOCKS, sizeof(*pool), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_record = heap_caps_malloc(SDR_RECORD_LIMIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_demod = heap_caps_calloc(1, sizeof(*s_demod), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_free || !s_iq || !s_decode || !s_monitor || !pool || !s_record || !s_demod) return ESP_ERR_NO_MEM;
+    if (!s_free || !s_iq || !s_decode || !s_monitor || !pool || !s_record || !s_demod) {
+        ESP_LOGE(TAG, "SDR allocation failed: queues=%d/%d/%d/%d IQ=%d record=%d demod=%d internal=%u largest=%u",
+                 s_free != NULL, s_iq != NULL, s_decode != NULL, s_monitor != NULL,
+                 pool != NULL, s_record != NULL, s_demod != NULL,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        return ESP_ERR_NO_MEM;
+    }
     storage_init();
     for (unsigned n = 0; n < IQ_BLOCKS; ++n) { iq_block_t *block = pool + n; xQueueSend(s_free, &block, 0); }
     dsp_waterfall_config_t fft = {.fft_size = SDR_FFT_BINS, .fft_line_decimation = 28,
@@ -342,7 +354,9 @@ esp_err_t sdr_service_init(void)
         ret = rtlsdr_start(&s_radio, &radio, iq_received, usb_status, NULL);
     }
     if (ret != ESP_OK) { usb_status("USB HOST START FAILED", NULL); ESP_LOGE(TAG, "USB host: %s", esp_err_to_name(ret)); }
-    if (xTaskCreatePinnedToCore(storage_worker,"sdr_store",4096,NULL,2,NULL,1)!=pdPASS) return ESP_ERR_NO_MEM;
+    /* Flash writes cannot use a P4 SPM stack with IDF 5.5's cache guard. */
+    if (xTaskCreatePinnedToCoreWithCaps(storage_worker, "sdr_store", 4096, NULL, 2, NULL, 1,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA) != pdPASS) return ESP_ERR_NO_MEM;
     return xTaskCreatePinnedToCore(worker, "sdr_dsp", 12288, NULL, 7, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 bool sdr_service_configure(const sdr_config_t *c, char *error, size_t size)
@@ -370,12 +384,30 @@ bool sdr_service_enabled(void) { if (!s_lock) return false; lock(); bool v = s_s
 bool sdr_service_decode_enabled(void) { if (!s_lock) return false; lock(); bool v = s_status.config.enabled && s_status.config.decode; unlock(); return v; }
 uint32_t sdr_service_generation(void) { if (!s_lock) return 0; lock(); uint32_t v = s_generation; unlock(); return v; }
 void sdr_service_set_tx_busy(bool busy) { if (!s_lock) return; lock(); s_status.tx_busy = busy; unlock(); }
-bool sdr_service_claim_tx(void)
+bool sdr_service_claim_tx(char *error, size_t size)
 {
-    if (!s_lock) return false;
-    lock(); bool ok = !s_status.config.enabled;
-    if (ok) s_status.tx_busy = true;
-    unlock(); return ok;
+    if (!s_lock) {
+        if (error && size) snprintf(error, size, "SDR service unavailable");
+        return false;
+    }
+    lock();
+    if (s_status.recording) {
+        if (error && size) snprintf(error, size, "Stop IQ recording in RF before TX/PTT");
+        unlock(); return false;
+    }
+    const bool switched = s_status.config.enabled;
+    /* Use the same lock as configure/record_start: no new SDR session can
+     * slip between releasing its input and reserving modem TX. The worker
+     * drains PCM and routes the generation change through the USB owner. */
+    if (switched) {
+        s_status.config.enabled = false;
+        s_status.generation = ++s_generation;
+        s_status.streaming = false;
+    }
+    s_status.tx_busy = true;
+    unlock();
+    if (switched) ESP_LOGI(TAG, "TX/PTT switched input from RTL-SDR to line audio");
+    return true;
 }
 size_t sdr_service_read_audio(int16_t *samples, size_t capacity, uint32_t timeout)
 {
