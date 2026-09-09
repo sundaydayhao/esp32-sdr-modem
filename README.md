@@ -26,7 +26,9 @@
 3. 接收短波时选择 USB 或 LSB，输入 RF 频率，并按下表选择短波输入方式，点击 **Apply**。
 4. 勾选 **Modem decode**，在 **Modem / Codec2** 页选择数字模式、音频中心和 Text/Image/Audio。SSB PCM 在设备内进入解码器，无需音频线回接。PSK 音频中心可先用 1500～2000 Hz；Codec2 固定 2000 Hz。
 5. 普通 SSB/FM 勾选 **Speaker** 监听。收到 Codec2 时播放解码后的语音。监听音量不影响数字解码输入。
-6. Modem / Codec2 页选择 **Tx** 或按住 **PTT** 时，自动关闭 SDR 输入并切到板载麦克风/线路音频。正在录制 IQ 时需先在 RF 页停止录制。页面底部显示当前输入及操作提示；回到 **Rx** 后保持线路音频，要恢复射频接收，在 RF 页勾选 **SDR input** 并 Apply。RTL-SDR 本身只能接收。
+6. Modem / Codec2 页选择 **Tx** 或按住 **PTT** 时，自动关闭 SDR 输入并切到板载麦克风/线路音频。正在录制 IQ 时需先在 Receiver 页停止录制。页面底部显示当前输入及操作提示；回到 **Rx** 后保持线路音频，要恢复射频接收，在 Receiver 页勾选 **SDR input** 并 Apply。RTL-SDR 本身只能接收。
+7. **ADS-B** 页点击 Apply 后接收 1090 MHz 报文，右侧为飞机列表，中央离线地图可点选定位、拖动、缩放。无新坐标的飞机只显示在列表；没有接收棒时不显示测试飞机。
+8. **Sub-GHz** 页默认中国大陆目录，提供 433.92、315、431、490、868.30 MHz 接收参考及用途说明；选择预设后 Apply。当前分析能力为 OOK 脉冲、频谱、IQ 和扫描，尚无具体传感器协议解码。
 
 | RF 输入 | 短波方式 |
 | --- | --- |
@@ -69,6 +71,6 @@ node tools/check_sdr_web.cjs
 
 数据流、来源、测试结果和硬件验收事项见 [SDR 移植说明](docs/SDR_PORT.md)。较早的 AP580/PSK 文档与录音保留为历史记录。
 
-界面预览来自运行生产 LVGL 代码的主机测试，信号为标注的 HOST TEST 数据：[SSB](docs/screenshots/lcd-sdr-ssb.png)、[ADS-B](docs/screenshots/lcd-sdr-adsb.png)、[FM](docs/screenshots/lcd-sdr-fm.png)。
+界面预览来自运行生产 LVGL 代码的主机测试，信号及飞机均为 HOST TEST 数据：[SSB](docs/screenshots/lcd-sdr-ssb.png)、[ADS-B 地图](docs/screenshots/lcd-sdr-adsb.png)、[FM](docs/screenshots/lcd-sdr-fm.png)、[Sub-GHz](docs/screenshots/lcd-sdr-subghz.png)、[Modem / Codec2](docs/screenshots/lcd-audio.png)。公共主题、页面管理、频段目录、地图来源与 UI skills 参考见 [界面维护说明](docs/SDR_PORT.md#统一界面ads-b-地图与中国大陆频段2026-09-09)。
 
 USB 枚举、真实调谐、持续吞吐、接收音质和屏幕/网络并发仍需实机验证。主机合成 IQ 结果不代表真实短波性能或 FreeDV 互通验收。

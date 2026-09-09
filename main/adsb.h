@@ -29,6 +29,7 @@ typedef struct {
     float heading_degrees;
     uint32_t messages;
     int64_t last_seen_ms;
+    int64_t last_position_ms;
 } adsb_aircraft_t;
 
 typedef struct {
@@ -51,6 +52,7 @@ void adsb_receiver_reset(adsb_receiver_t *receiver);
 void adsb_receiver_discontinuity(adsb_receiver_t *receiver);
 void adsb_receiver_push_iq(adsb_receiver_t *receiver, const uint8_t *iq, size_t len);
 void adsb_receiver_get_status(adsb_receiver_t *receiver, adsb_status_t *out);
+bool adsb_aircraft_position_fresh(const adsb_aircraft_t *aircraft, int64_t now_ms);
 
 #ifdef __cplusplus
 }

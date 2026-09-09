@@ -2,6 +2,8 @@
 #include "sdr_service.h"
 #include "rx_web.h"
 #include "content_service.h"
+#include "sdr_presets.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,12 @@
 
 extern const unsigned char sdr_html_start[] asm("_binary_sdr_html_start");
 extern const unsigned char sdr_html_end[] asm("_binary_sdr_html_end");
+extern const unsigned char map_data_start[] asm("_binary_map_data_json_start");
+extern const unsigned char map_data_end[] asm("_binary_map_data_json_end");
+extern const unsigned char theme_start[] asm("_binary_theme_css_start");
+extern const unsigned char theme_end[] asm("_binary_theme_css_end");
+extern const unsigned char dashboard_start[] asm("_binary_dashboard_js_start");
+extern const unsigned char dashboard_end[] asm("_binary_dashboard_js_end");
 static esp_err_t json_reply(httpd_req_t *req, cJSON *json)
 {
     char *text = json ? cJSON_PrintUnformatted(json) : NULL; cJSON_Delete(json);
@@ -21,6 +29,51 @@ static esp_err_t page(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_send(req, (const char *)sdr_html_start, sdr_html_end - sdr_html_start - 1);
+}
+static esp_err_t map_data(httpd_req_t *req)
+{
+    httpd_resp_set_type(req,"application/json");httpd_resp_set_hdr(req,"Cache-Control","public, max-age=86400");
+    return httpd_resp_send(req,(const char *)map_data_start,map_data_end-map_data_start-1);
+}
+static esp_err_t theme(httpd_req_t *req)
+{
+    httpd_resp_set_type(req,"text/css");httpd_resp_set_hdr(req,"Cache-Control","no-cache");
+    return httpd_resp_send(req,(const char *)theme_start,theme_end-theme_start-1);
+}
+static esp_err_t dashboard_script(httpd_req_t *req)
+{
+    httpd_resp_set_type(req,"text/javascript");httpd_resp_set_hdr(req,"Cache-Control","no-cache");
+    return httpd_resp_send(req,(const char *)dashboard_start,dashboard_end-dashboard_start-1);
+}
+static esp_err_t aircraft(httpd_req_t *req)
+{
+    adsb_aircraft_t *a=calloc(ADSB_MAX_AIRCRAFT,sizeof(*a));if(!a)return json_reply(req,NULL);
+    size_t count=sdr_service_get_aircraft(a,ADSB_MAX_AIRCRAFT);int64_t now=esp_timer_get_time()/1000;
+    cJSON *j=cJSON_CreateObject();if(!j){free(a);return json_reply(req,NULL);}
+    cJSON_AddStringToObject(j,"boot_id",rx_web_boot_id());cJSON *rows=cJSON_AddArrayToObject(j,"aircraft");
+    for(size_t n=0;n<count;n++){
+        cJSON *v=cJSON_CreateObject();cJSON_AddItemToArray(rows,v);
+        cJSON_AddStringToObject(v,"icao",a[n].icao);cJSON_AddStringToObject(v,"callsign",a[n].callsign);
+        cJSON_AddNumberToObject(v,"messages",a[n].messages);cJSON_AddNumberToObject(v,"age_ms",now-a[n].last_seen_ms);
+        cJSON_AddBoolToObject(v,"has_position",a[n].has_position);
+        if(a[n].has_position){cJSON_AddNumberToObject(v,"latitude",a[n].latitude);cJSON_AddNumberToObject(v,"longitude",a[n].longitude);cJSON_AddNumberToObject(v,"position_age_ms",now-a[n].last_position_ms);}
+        if(a[n].has_altitude)cJSON_AddNumberToObject(v,"altitude_feet",a[n].altitude_feet);
+        if(a[n].has_speed)cJSON_AddNumberToObject(v,"speed_knots",a[n].speed_knots);
+        if(a[n].has_heading)cJSON_AddNumberToObject(v,"heading_degrees",a[n].heading_degrees);
+    }
+    free(a);return json_reply(req,j);
+}
+static esp_err_t presets(httpd_req_t *req)
+{
+    cJSON *j=cJSON_CreateObject();if(!j)return json_reply(req,NULL);
+    cJSON_AddStringToObject(j,"region","CN");cJSON_AddStringToObject(j,"reference","MIIT 2019 No.52");
+    cJSON *rows=cJSON_AddArrayToObject(j,"presets");
+    for(unsigned n=0;n<sdr_cn_preset_count;n++){
+        const sdr_preset_t *p=&sdr_cn_presets[n];cJSON *v=cJSON_CreateObject();cJSON_AddItemToArray(rows,v);
+        cJSON_AddStringToObject(v,"name",p->name);cJSON_AddStringToObject(v,"usage",p->usage);cJSON_AddStringToObject(v,"analysis",p->analysis);
+        cJSON_AddNumberToObject(v,"center_hz",p->center_hz);cJSON_AddNumberToObject(v,"start_hz",p->start_hz);cJSON_AddNumberToObject(v,"stop_hz",p->stop_hz);cJSON_AddNumberToObject(v,"mode",p->mode);
+    }
+    return json_reply(req,j);
 }
 static cJSON *config_json(const sdr_config_t *c)
 {
@@ -133,6 +186,9 @@ esp_err_t sdr_web_register(httpd_handle_t server)
 {
     const httpd_uri_t routes[] = {
         {.uri="/",.method=HTTP_GET,.handler=page}, {.uri="/sdr",.method=HTTP_GET,.handler=page},
+        {.uri="/map-data.json",.method=HTTP_GET,.handler=map_data}, {.uri="/theme.css",.method=HTTP_GET,.handler=theme},
+        {.uri="/dashboard.js",.method=HTTP_GET,.handler=dashboard_script},
+        {.uri="/api/aircraft",.method=HTTP_GET,.handler=aircraft}, {.uri="/api/presets",.method=HTTP_GET,.handler=presets},
         {.uri="/api/sdr",.method=HTTP_GET,.handler=status}, {.uri="/api/sdr",.method=HTTP_POST,.handler=configure},
         {.uri="/api/sdr/record",.method=HTTP_POST,.handler=record_control},
         {.uri="/api/sdr/record",.method=HTTP_GET,.handler=record_download},

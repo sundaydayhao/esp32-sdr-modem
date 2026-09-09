@@ -10,6 +10,7 @@ out = root / 'build/host-tools'
 out.mkdir(parents=True, exist_ok=True)
 exe = out / 'host_sdr_check.exe'
 sources = ['tools/host_sdr_check.c', 'main/sdr_types.c', 'main/sdr_demod.c', 'main/adsb.c',
+           'main/sdr_presets.c', 'main/sdr_map.c',
            'main/sdr_record.c',
            'main/psk_tx.c', 'main/psk_rx.c', 'main/psk_modes.c', 'main/psk_codec.c',
            'main/audio_decim.c', 'components/psk_rtty/psk_rtty.c']

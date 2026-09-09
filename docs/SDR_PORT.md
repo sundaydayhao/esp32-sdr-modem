@@ -59,7 +59,7 @@ Flash 内部格式为 `SDR2`、32 字节大端头和 CU8 数据，CRC-32 覆盖�
 
 ## 界面与 API
 
-LCD 默认打开 SDR 接收台，保留 Modem/Codec2 页面和返回 RF 按钮。提供应用、前端、MHz 频率、外部本振、输入/直接解码/监听、音量、扫描区间及录制控制。无数据时显示 USB 状态，生产界面不启用合成瀑布图。
+LCD 默认打开 Receiver 接收台，通过统一顶部导航进入 Modem/Codec2。两页共享配色、卡片、触控按钮、下拉控件和页面管理；接收台按 Radio、ADS-B、Sub-GHz、IQ/Scan 分组，低频操作收进 Receiver settings。生产界面无数据时显示等待状态，不启用合成瀑布图。
 
 网页热点为 `ESP32-SDR`，默认密码 `pskmodem32`。
 
@@ -67,6 +67,10 @@ LCD 默认打开 SDR 接收台，保留 Modem/Codec2 页面和返回 RF 按钮�
 | --- | --- |
 | `GET /`、`GET /sdr` | SDR 接收界面 |
 | `GET /modem` | 原有数字通信界面 |
+| `GET /theme.css`、`GET /dashboard.js` | 两页公共网页主题、接收台地图与频段交互 |
+| `GET /api/aircraft` | boot id、最多 24 架飞机、报文年龄、可用坐标、呼号/高度/速度/航向 |
+| `GET /api/presets` | 中国大陆接收参考目录，与 LCD 使用相同 C 数据 |
+| `GET /map-data.json` | 固件内置离线海岸线，浏览器本地绘制 |
 | `GET /api/sdr` | 配置、实际频率、USB、IQ/PCM 丢弃、FFT、波形、ADS-B、录制状态 |
 | `POST /api/sdr` | 完整接收配置，校验类型、频率、输入方式、ADS-B 和数字解码组合 |
 | `POST /api/sdr/record` | `{"action":"start"}` 或 `{"action":"stop"}` |
@@ -133,6 +137,26 @@ python tools/check_board_tx.py --port COM21 --content AUDIO --cycles 5 --reset -
 三组实机验收全部通过：Audio 5 轮 / 109.531 秒、Text 3 轮 / 69.125 秒、Image 3 轮 / 69.204 秒，共 11 轮 Tx/Rx 切换。每组仅有一次预期主动启动、一次 SDR 到线路音频切换；panic、意外重启、语音排空超时均为 0。每轮 Audio 在同一会话内编码计数由约 89～90 帧推进到 157～160 帧。33 个诊断样本的内部空闲堆均为 77,635 字节、最大块均为 31,744 字节。测试结束状态为 Image / Rx、TX inactive、输出队列为空，串口已关闭。
 
 验收证据为 `build/sdr-tx-audio-verified-20260909.{log,json}`、`build/sdr-tx-text-20260909.{log,json}`、`build/sdr-tx-image-20260909.{log,json}`。首次 Audio 脚本误将每会话清零的计数器当成累计计数，产生 `sdr-tx-audio-20260909` 失败记录；修正为比较同一 TX 会话内的两次计数后完成上述验收。这些测试未接 RTL-SDR 棒，也未接对端进行音频/空口互通，不能证明真实 IQ 录制、USB 满负载或端到端收发质量。
+
+## 统一界面、ADS-B 地图与中国大陆频段（2026-09-09）
+
+维护入口：`main/ui_theme.h/.c` 集中管理 LCD 颜色、控件、导航；`main/theme.css` 管理两个网页的公共外观，颜色与 LCD 对应。`main/display.c` 负责数字通信页，`main/sdr_display.c` 负责接收页，接收配置仍统一交给 `sdr_service_configure()`，页面导航本身不改变输入。频段元数据只写在 `main/sdr_presets.c`，LCD 直接读取，网页通过 `/api/presets` 获取。
+
+设计参考了 [UI UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) 的触控尺寸、间距和状态反馈建议，以及 [Anthropic Frontend Design](https://github.com/anthropics/skills/tree/main/skills/frontend-design) 的一致视觉语言和任务布局建议。未安装第三方 skill 或运行其安装脚本；实际界面使用项目的 LVGL 和原生 HTML/CSS/Canvas。
+
+ADS-B 列表可点选定位，地图支持拖动、缩放和适配全部飞机。机标采用成功 CPR 解码的经纬度，15 秒无新位置即不再画点；仍有其他报文的飞机可以保留在列表，显示无新坐标。目标 60 秒没有报文后退出列表。关闭接收或离开 ADS-B 模式不再提供飞机快照，失去流时取消有效坐标，网页断线时清空机标。渲染使用带锁的有界快照，不扩大常规 SDR 状态对象，也不在音频或 USB 回调里绘图。
+
+底图为 [Natural Earth 1:110m Coastline 4.1.0](https://www.naturalearthdata.com/downloads/110m-physical-vectors/110m-coastline/)，用于离线方位概览，仅包含海岸线和经纬网，不是街道地图。数据属于 [Public Domain](https://www.naturalearthdata.com/about/terms-of-use/)。生成工具 `tools/build_map_data.py` 从 [NACIS 数据镜像](https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip) 获取 ZIP，源文件 SHA-256 为 `664449b39070027e882abb295974d182afec18ca21107273d17e9e8bf6f64817`，生成 134 条路径、5128 个顶点，量化为 0.01 度；`main/sdr_map_data.h` 与 `main/map_data.json` 应随源码保留。地图数据在 Flash，LCD 像素和飞机快照在 PSRAM。
+
+默认中国大陆接收参考包括 433.92、315.00、431.00、490.00、868.30 MHz，展示对应的遥控或民用计量用途。依据 [工信部 2019 年第 52 号公告](https://www.miit.gov.cn/zwgk/zcwj/wjfb/gg/art/2020/art_4f2c890530cc4837b2113cf977e249c4.html) 及[技术要求目录](https://www.miit.gov.cn/cms_files/filemanager/oldfile/miit/n1146295/n1652858/n1652930/n4509607/c7545828/part/7545929.pdf)，这些范围具有具体用途及技术条件，不标成通用免许可发射频段。项目 RTL-SDR 仍为只接收；Sub-GHz 提供原始 OOK 脉冲、频谱、IQ 录制与扫描入口，尚不解码 LoRa/FSK 或具体厂商传感器数据。
+
+新增主机验证覆盖地图投影方向、日期变更线、缩放边界、像素缓冲边界、无效/过期坐标及五组预设；实际 LVGL 覆盖飞机列表、点选定位、缩放/适配、空状态和 Sub-GHz 应用。网页检查覆盖结构化飞机、缺少坐标、断线清除、频段 POST；浏览器预览也使用标注的 HOST TEST 数据，不能作为真实空口接收证据。
+
+本版 ESP-IDF 构建通过，镜像 1,918,928 字节，SHA-256 `d7fdabef1c819859c79a11766ad2a1e8382cfdd063aa289c07c090d0ac5302af`，经 COM21 写入并校验成功，应用分区剩余 54%。日志为 `build/ui-redesign-{build,flash,lcd,sdr-check}.log`。2026-09-09 12:21:21～12:24:21（UTC+8）的实机观察持续 180.172 秒，仅测试开始的一次主动 USB 复位，无 panic/异常重启，12 次状态响应正常；内部可用堆恒为 76,883 字节，最大内部块 31,744 字节。期间还记录到非脚本的模式、Tx 和 Image 切换。原始证据为 `build/ui-redesign-board-20260909.{log,timestamped.log,json}`。
+
+本轮仍未接 RTL-SDR，真实飞机/传感器数据与 USB 持续流未验证；电脑也未通过板载热点完成 HTTP 联调，网页交互在本地主机 fixture 上检查。原有 SPIFFS 挂载告警仍在，未格式化数据分区。
+
+烧录后另完成 Audio Tx/Rx 两轮实机回归，持续 61.140 秒，仅一次预期主动复位，无 panic、额外启动或语音排空超时；两轮会话的编码计数分别从 90/89 推进到 157。测试末尾恢复 Audio/Rx、TX inactive、输出队列为空，并关闭串口。证据为 `build/ui-redesign-tx-20260909.{log,json}`。
 
 ## 尚需硬件验收
 

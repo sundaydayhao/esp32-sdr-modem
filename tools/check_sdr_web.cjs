@@ -10,10 +10,14 @@ const elements = new Map(), calls = [], timers = [];
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: '', checked: false, selectedIndex: 0, textContent: '', hidden: false,
-    children: [{}, {}, {}], handlers: {}, width: 768, height: 290,
+    children: [{}, {}, {}], handlers: {}, attributes: {}, width: 768, height: 290,
     addEventListener(type, fn) { this.handlers[type] = fn; },
+    dispatchEvent(e){if(this.handlers[e.type])this.handlers[e.type](e);},
+    setAttribute(k,v){this.attributes[k]=v;},
+    replaceChildren(){this.children=[];},append(o){this.children.push(o);},
     getContext() { return {
       clearRect(){}, fillRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, drawImage(){},
+      save(){},restore(){},translate(){},rotate(){},closePath(){},fill(){},fillText(){},
       createImageData(w, h) { return { data: new Uint8ClampedArray(w * h * 4) }; }, putImageData(){}
     }; }
   });
@@ -29,11 +33,17 @@ let response = {
   voice_decoded:90,voice_crc_errors:0,image_rows:32
 };
 let rejectPost = false, rxCounter = 0;
+let nextElement=0;
+let aircraftData=[{icao:'40621D',callsign:'HOST123',has_position:true,latitude:52.26,longitude:3.94,altitude_feet:38000,age_ms:500},
+  {icao:'ABCDEF',callsign:'NOCPR',has_position:false,age_ms:900}];
 const context = vm.createContext({
-  document:{getElementById:element}, TextDecoder, Math, Number, Uint8ClampedArray,
+  document:{getElementById:element,createElement:()=>element('generated-'+nextElement++)}, TextDecoder, Math, Number, Uint8ClampedArray, Event,
   setTimeout(fn){timers.push(fn);},
   async fetch(url, options={}) {
     calls.push({url,options});
+    if(url==='/map-data.json')return {ok:true,json:async()=>JSON.parse(fs.readFileSync(path.join(__dirname,'../main/map_data.json'),'utf8'))};
+    if(url==='/api/presets')return {ok:true,json:async()=>({presets:[{name:'433.92 MHz',center_hz:433920000,start_hz:433050000,stop_hz:434790000,mode:8,usage:'Remote controls',analysis:'OOK pulses'},{name:'315.00 MHz',center_hz:315000000,start_hz:314000000,stop_hz:316000000,mode:8,usage:'Remote controls',analysis:'OOK pulses'}]})};
+    if(url==='/api/aircraft')return {ok:true,json:async()=>({boot_id:response.boot_id,aircraft:structuredClone(aircraftData)})};
     if (options.method==='POST') {
       if (rejectPost) return {ok:false,text:async()=> 'HF needs Direct Q'};
       if (url==='/api/sdr') { response.config=JSON.parse(options.body); ++response.generation; }
@@ -46,6 +56,7 @@ const context = vm.createContext({
     return {ok:true,json:async()=>structuredClone(response)};
   }
 });
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../main/dashboard.js'),'utf8'), context, {filename:'dashboard.js'});
 vm.runInContext(script, context, {filename:'sdr.html'});
 async function settle() { for(let n=0;n<6;n++)await new Promise(resolve=>setImmediate(resolve)); }
 async function tick() { const fn=timers.shift();assert(fn);await fn();await settle(); }
@@ -59,6 +70,11 @@ async function tick() { const fn=timers.shift();assert(fn);await fn();await sett
   await element('form').handlers.submit({preventDefault(){}});await settle();
   const posted=JSON.parse(calls.findLast(c=>c.options.method==='POST').options.body);
   assert.equal(posted.frequency_hz,1090000000);assert.equal(posted.mode,6);
+  await tick();assert.equal(element('aircraftPanel').hidden,false);
+  assert.equal(element('aircraftRows').children.length,2);
+  assert.match(element('mapCaption').textContent,/1 架有坐标/);
+  element('aircraftRows').children[0].handlers.click();assert.match(element('mapDetail').textContent,/52.26000, 3.94000/);
+  aircraftData=[];await tick();assert.match(element('aircraftRows').children[0].textContent,/暂无飞机/);
   rejectPost=true;await element('form').handlers.submit({preventDefault(){}});
   assert.match(element('message').textContent,/HF needs Direct Q/);rejectPost=false;
   response.config.mode=0;response.config.decode=true;response.modem_content=2;
@@ -66,5 +82,11 @@ async function tick() { const fn=timers.shift();assert(fn);await fn();await sett
   assert.match(element('details').textContent,/90/);
   response.boot_id='boot-two';response.modem_content=0;rxCounter=0;
   await tick();assert.equal(calls.findLast(c=>c.url.startsWith('/api/rx')).url,'/api/rx?cursor=0');
+  element('subTab').handlers.click();element('bandPreset').value='1';element('bandPreset').handlers.change();
+  assert.equal(element('frequency').value,'315.000000');assert.equal(element('presetPanel').hidden,false);
+  await element('form').handlers.submit({preventDefault(){}});
+  assert.equal(response.config.frequency_hz,315000000);assert.equal(response.config.decode,false);
+  vm.runInContext('dashboard.disconnected()',context);assert.match(element('mapCaption').textContent,/0 架有坐标/);
+  console.log('PASS dashboard: offline map, structured aircraft, no-position row, selection, empty/disconnect, CN preset POST');
   console.log('PASS SDR web: raw RX cursor, reboot reset, ADS-B preset, configuration POST, errors and Codec2 status');
 })().catch(error=>{console.error(error);process.exitCode=1;});

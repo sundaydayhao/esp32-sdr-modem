@@ -11,39 +11,35 @@
 #include "lvgl.h"
 #include "psk_modes.h"
 #include "sdr_display.h"
+#include "ui_theme.h"
 
 static const char *TAG = "display";
 static lv_obj_t *s_ptt_button, *s_brand, *s_input_hint;
 
 static void ptt_event_cb(lv_event_t *event);
-static void open_sdr(lv_event_t *event) { (void)event; sdr_display_open(); }
+
 
 /* HPM6750 app/ui/display.c at c84c683: 800x480 layout, scaled for P4. */
-#define UI_BASE_WIDTH 800
-#define UI_BASE_HEIGHT 480
-#define LEFT_PANEL_X 20
-#define LEFT_PANEL_Y 56
-#define TEXT_PANEL_X 520
-#define TEXT_PANEL_Y 56
+#define UI_BASE_WIDTH 1024
+#define UI_BASE_HEIGHT 600
+#define LEFT_PANEL_X 260
+#define LEFT_PANEL_Y 160
+#define TEXT_PANEL_X 760
+#define TEXT_PANEL_Y 160
 #define ROLE_DROPDOWN_X 344
 #define CONTENT_DROPDOWN_X 464
 #define MODE_DROPDOWN_X 632
 #define WATERFALL_X 14
-#define WATERFALL_Y 76
-#define WATERFALL_WIDTH 456
-#define WATERFALL_HEIGHT 300
+#define WATERFALL_Y 86
+#define WATERFALL_WIDTH 452
+#define WATERFALL_HEIGHT 240
 #define WATERFALL_COLOR_BITS 16U
 #define WATERFALL_MAX_HZ SPECTRUM_BINS
-#define WATERFALL_LABEL_Y 380
+#define WATERFALL_LABEL_Y 344
 #define WATERFALL_FREQ_LABEL_WIDTH 48
 #define TEXT_DISPLAY_TAIL_CHARS 520U
 #define TEXT_DISPLAY_CACHE_LEN (TEXT_DISPLAY_TAIL_CHARS + 1U)
 
-typedef struct { uint8_t red, green, blue; } waterfall_palette_t;
-static const waterfall_palette_t s_waterfall_palette[9] = {
-    {0,0,0}, {0,0,136}, {0,19,198}, {0,32,239}, {172,167,105},
-    {195,198,49}, {225,228,107}, {255,255,0}, {251,51,0},
-};
 static lv_obj_t *s_mode_label, *s_tone_label, *s_text_view, *s_text_label;
 static lv_obj_t *s_text_title_label, *s_waterfall_canvas;
 static lv_obj_t *s_role_dropdown, *s_content_dropdown, *s_mode_dropdown;
@@ -163,7 +159,7 @@ esp_err_t display_init(void)
         return ESP_ERR_NO_MEM;
     }
     memset(s_waterfall_buffer, 0, waterfall_bytes);
-    const size_t image_bytes = LV_CANVAS_BUF_SIZE(scale_x(240), scale_x(240), 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    const size_t image_bytes = LV_CANVAS_BUF_SIZE(scale_x(216), scale_x(216), 16, LV_DRAW_BUF_STRIDE_ALIGN);
     s_image_buffer = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, image_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_image_pixels = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, MODEM_IMAGE_PIXEL_COUNT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_image_buffer || !s_image_pixels) return ESP_ERR_NO_MEM;
@@ -250,7 +246,7 @@ void display_render(const display_state_t *state, const spectrum_t *spectrum)
     content_get_status(&cs);
     if (image && s_image_version != cs.image_version) {
         content_copy_image(s_image_pixels, &cs);
-        const unsigned width = scale_x(240);
+        const unsigned width = scale_x(216);
         const unsigned stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_RGB565);
         for (unsigned y = 0; y < width; ++y) {
             uint16_t *row = (uint16_t *)(s_image_buffer + y * stride);
@@ -360,37 +356,33 @@ static void build_ui(lv_display_t *disp)
     lv_obj_set_style_text_font(screen, &lv_font_montserrat_18, LV_PART_MAIN);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xE8EEF2), LV_PART_MAIN);
 
-    lv_obj_t *header = lv_obj_create(screen);
-    lv_obj_remove_style_all(header);
-    lv_obj_set_pos(header, 0, 0);
-    lv_obj_set_size(header, s_ui_w, scale_y(46));
-    lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(header, lv_color_hex(0x1E3A5F), LV_PART_MAIN);
-    s_brand = make_label(header, "ESP32-P4 PSK MODEM", scale_x(22), scale_y(10), scale_x(280),
-               &lv_font_montserrat_26, lv_color_hex(0xFFFFFF));
-    s_ptt_button = lv_button_create(header);
-    lv_obj_set_pos(s_ptt_button, scale_x(22), scale_y(7));
-    lv_obj_set_size(s_ptt_button, scale_x(280), scale_y(34));
-    lv_obj_t *ptt_label = lv_label_create(s_ptt_button);
-    lv_label_set_text(ptt_label, "Hold to talk (PTT)"); lv_obj_center(ptt_label);
-    lv_obj_add_flag(s_ptt_button, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(s_ptt_button, ptt_event_cb, LV_EVENT_ALL, NULL);
-    s_role_dropdown = make_dropdown(header, ROLE_DROPDOWN_X, 7, 88, 34, "Rx\nTx");
-    lv_obj_t *rf = lv_button_create(header);
-    lv_obj_set_pos(rf, scale_x(303), scale_y(7)); lv_obj_set_size(rf, scale_x(36), scale_y(34));
-    lv_obj_t *rf_text = lv_label_create(rf); lv_label_set_text(rf_text, "RF"); lv_obj_center(rf_text);
-    lv_obj_add_event_cb(rf, open_sdr, LV_EVENT_CLICKED, NULL);
+    ui_theme_screen(screen, UI_MODEM);
+    ui_theme_label(screen, "Digital modem", scale_x(20), scale_y(89), scale_x(224), &lv_font_montserrat_26, UI_TEXT);
+    ui_theme_label(screen, "Text, images and Codec2 voice", scale_x(260), scale_y(98), scale_x(744), &lv_font_montserrat_18, UI_MUTED);
+    lv_obj_t *controls = make_panel(screen, scale_x(20), scale_y(160), scale_x(224), scale_y(380));
+    make_label(controls, "Direction", scale_x(16), scale_y(20), scale_x(192), &lv_font_montserrat_14, lv_color_hex(UI_MUTED));
+    s_role_dropdown = make_dropdown(controls, 16, 43, 192, 44, "Rx\nTx");
     lv_obj_add_event_cb(s_role_dropdown, role_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_content_dropdown = make_dropdown(header, CONTENT_DROPDOWN_X, 7, 120, 34, "Text\nImage\nAudio");
+    make_label(controls, "Content", scale_x(16), scale_y(107), scale_x(192), &lv_font_montserrat_14, lv_color_hex(UI_MUTED));
+    s_content_dropdown = make_dropdown(controls, 16, 130, 192, 44, "Text\nImage\nAudio");
     lv_obj_add_event_cb(s_content_dropdown, content_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_mode_dropdown = make_dropdown(header, MODE_DROPDOWN_X, 7, 156, 34, "BPSK\nQPSK\n8PSK");
+    make_label(controls, "Modulation", scale_x(16), scale_y(194), scale_x(192), &lv_font_montserrat_14, lv_color_hex(UI_MUTED));
+    s_mode_dropdown = make_dropdown(controls, 16, 217, 192, 44, "BPSK\nQPSK\n8PSK");
     lv_obj_add_event_cb(s_mode_dropdown, mode_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_mode_dropdown, mode_dropdown_event_cb, LV_EVENT_CANCEL, NULL);
     mode_show_families();
+    s_brand = make_label(controls, "Select Tx to transmit\nthrough line audio.", scale_x(16), scale_y(300), scale_x(192), &lv_font_montserrat_18, lv_color_hex(UI_MUTED));
+    s_ptt_button = lv_button_create(controls);
+    lv_obj_set_pos(s_ptt_button, scale_x(16), scale_y(292));
+    lv_obj_set_size(s_ptt_button, scale_x(192), scale_y(64));
+    ui_theme_button(s_ptt_button, true);
+    lv_obj_t *ptt_label = lv_label_create(s_ptt_button);
+    lv_label_set_text(ptt_label, "Hold to talk"); lv_obj_center(ptt_label);
+    lv_obj_add_flag(s_ptt_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_ptt_button, ptt_event_cb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *left = make_panel(screen, scale_x(LEFT_PANEL_X), scale_y(LEFT_PANEL_Y),
-                                scale_x(488), scale_y(406));
+                                scale_x(484), scale_y(380));
     lv_obj_remove_flag(left, LV_OBJ_FLAG_SCROLLABLE);
     s_mode_label = make_label(left, "RX BPSK BPSK31", scale_x(14), scale_y(10), scale_x(460),
                               &lv_font_montserrat_26, lv_color_hex(0xFFFFFF));
@@ -415,29 +407,29 @@ static void build_ui(lv_display_t *disp)
     lv_obj_set_style_bg_opa(marker, LV_OPA_40, LV_PART_MAIN);
 
     lv_obj_t *right = make_panel(screen, scale_x(TEXT_PANEL_X), scale_y(TEXT_PANEL_Y),
-                                 scale_x(256), scale_y(406));
+                                 scale_x(244), scale_y(380));
     lv_obj_remove_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     s_text_title_label = make_label(right, "Rx Content", scale_x(10), scale_y(10), scale_x(220),
                                     &lv_font_montserrat_26, lv_color_hex(0xFFFFFF));
     s_text_view = lv_obj_create(right);
     lv_obj_remove_style_all(s_text_view);
     lv_obj_set_pos(s_text_view, scale_x(8), scale_y(42));
-    lv_obj_set_size(s_text_view, scale_x(240), scale_y(356));
+    lv_obj_set_size(s_text_view, scale_x(216), scale_y(312));
     lv_obj_set_scroll_dir(s_text_view, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_text_view, LV_SCROLLBAR_MODE_AUTO);
-    s_text_label = make_label(s_text_view, "[NO DECODED PSK TEXT YET]", 0, 0, scale_x(232),
+    s_text_label = make_label(s_text_view, "[NO DECODED PSK TEXT YET]", 0, 0, scale_x(216),
                               &lv_font_montserrat_18, lv_color_hex(0xFFFFFF));
     lv_label_set_long_mode(s_text_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_height(s_text_label, LV_SIZE_CONTENT);
-    s_image_progress = make_label(right, "Received 0/96 rows", scale_x(8), scale_y(42), scale_x(240),
-                                  &lv_font_montserrat_18, lv_color_hex(0x90DACC));
+    s_image_progress = make_label(right, "Received 0/96 rows", scale_x(8), scale_y(42), scale_x(216),
+                                  &lv_font_montserrat_18, lv_color_hex(UI_ACCENT));
     s_image_canvas = lv_canvas_create(right);
-    lv_canvas_set_buffer(s_image_canvas, s_image_buffer, scale_x(240), scale_x(240), LV_COLOR_FORMAT_RGB565);
+    lv_canvas_set_buffer(s_image_canvas, s_image_buffer, scale_x(216), scale_x(216), LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(s_image_canvas, scale_x(8), scale_y(92));
     lv_obj_add_flag(s_image_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_image_progress, LV_OBJ_FLAG_HIDDEN);
-    s_input_hint = make_label(screen, "", scale_x(22), scale_y(465), scale_x(756),
-                              &lv_font_montserrat_14, lv_color_hex(0x90DACC));
+    s_input_hint = make_label(screen, "", scale_x(22), scale_y(562), scale_x(976),
+                              &lv_font_montserrat_14, lv_color_hex(UI_ACCENT));
 }
 
 static lv_obj_t *make_dropdown(lv_obj_t *parent, int x, int y, int w, int h, const char *options)
@@ -462,6 +454,7 @@ static lv_obj_t *make_dropdown(lv_obj_t *parent, int x, int y, int w, int h, con
     lv_obj_set_style_text_font(list, &lv_font_montserrat_18, LV_PART_MAIN);
     lv_obj_set_style_max_height(list, scale_y(390), LV_PART_MAIN);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x1E3A5F), LV_PART_SELECTED | LV_STATE_CHECKED);
+    ui_theme_control(obj);
     return obj;
 }
 
@@ -595,6 +588,7 @@ static lv_obj_t *make_panel(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, i
     lv_obj_set_style_border_width(panel, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(panel, 6, LV_PART_MAIN);
     lv_obj_set_style_pad_all(panel, 0, LV_PART_MAIN);
+    ui_theme_card(panel);
     return panel;
 }
 
@@ -651,7 +645,7 @@ static void make_waterfall_frequency_labels(lv_obj_t *parent)
         }
         lv_obj_t *label = make_label(parent, ticks[i].text, x, s_waterfall_label_y,
                                      s_waterfall_freq_label_w, &lv_font_montserrat_18,
-                                     lv_color_hex(0x90A4AE));
+                                     lv_color_hex(UI_MUTED));
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     }
 }
@@ -698,20 +692,5 @@ static void waterfall_push(const spectrum_t *spectrum)
 
 static uint16_t waterfall_color(uint8_t level)
 {
-    uint32_t section = level / 32U;
-    const uint32_t step = level % 32U;
-    if (section >= 8U) {
-        section = 7U;
-    }
-
-    const waterfall_palette_t *a = &s_waterfall_palette[section];
-    const waterfall_palette_t *b = &s_waterfall_palette[section + 1U];
-    const uint8_t red = (uint8_t)((int32_t)a->red +
-        ((int32_t)step * ((int32_t)b->red - (int32_t)a->red)) / 32);
-    const uint8_t green = (uint8_t)((int32_t)a->green +
-        ((int32_t)step * ((int32_t)b->green - (int32_t)a->green)) / 32);
-    const uint8_t blue = (uint8_t)((int32_t)a->blue +
-        ((int32_t)step * ((int32_t)b->blue - (int32_t)a->blue)) / 32);
-
-    return lv_color_to_u16(lv_color_make(red, green, blue));
+    return ui_theme_signal_color(level);
 }

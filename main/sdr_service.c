@@ -172,6 +172,7 @@ static void fft_received(const uint8_t *bins, size_t count, void *ctx)
 static void aircraft_received(const adsb_aircraft_t *aircraft, void *ctx)
 {
     (void)ctx;
+    lock();
     unsigned index = 0;
     for (; index < ADSB_MAX_AIRCRAFT; ++index)
         if (!s_aircraft[index].icao[0] || !strcmp(s_aircraft[index].icao, aircraft->icao)) break;
@@ -181,6 +182,23 @@ static void aircraft_received(const adsb_aircraft_t *aircraft, void *ctx)
             if (s_aircraft[n].last_seen_ms < s_aircraft[index].last_seen_ms) index = n;
     }
     s_aircraft[index] = *aircraft;
+    unlock();
+}
+size_t sdr_service_get_aircraft(adsb_aircraft_t *out, size_t capacity)
+{
+    if(!s_lock||!out)return 0;
+    size_t count=0;int64_t now=esp_timer_get_time()/1000;
+    lock();
+    if(s_status.config.enabled&&s_status.config.mode==SDR_ADSB){
+        for(unsigned n=0;n<ADSB_MAX_AIRCRAFT&&count<capacity;n++){
+            const adsb_aircraft_t *a=&s_aircraft[n];
+            if(!a->icao[0]||now-a->last_seen_ms>60000)continue;
+            out[count]=*a;
+            out[count].has_position=s_status.streaming&&adsb_aircraft_position_fresh(a,now);
+            ++count;
+        }
+    }
+    unlock();return count;
 }
 static void publish_aircraft(void)
 {
@@ -193,7 +211,7 @@ static void publish_aircraft(void)
         if (!a->icao[0] || now - a->last_seen_ms > 60000) continue;
         ++count;
         char position[48] = "--", altitude[16] = "--";
-        if (a->has_position) snprintf(position, sizeof(position), "%.4f %.4f", a->latitude, a->longitude);
+        if (adsb_aircraft_position_fresh(a,now)) snprintf(position, sizeof(position), "%.4f %.4f", a->latitude, a->longitude);
         if (a->has_altitude) snprintf(altitude, sizeof(altitude), "%d", a->altitude_feet);
         if (used < sizeof(text) - 100)
             used += snprintf(text + used, sizeof(text) - used, "%s  %-8s  %6s  %s\n", a->icao, a->callsign, altitude, position);
@@ -247,8 +265,8 @@ static void worker(void *arg)
             xQueueReset(s_decode); xQueueReset(s_monitor);
             s_ook_count = s_ook_length = 0; s_ook_high = false;
             sdr_demod_init(s_demod, s_active.mode, pcm_received, NULL);
-            adsb_receiver_reset(s_adsb); memset(s_aircraft, 0, sizeof(s_aircraft));
-            lock(); memset(s_status.scan, 0, sizeof(s_status.scan));
+            adsb_receiver_reset(s_adsb);
+            lock(); memset(s_aircraft, 0, sizeof(s_aircraft));memset(s_status.scan, 0, sizeof(s_status.scan));
             s_status.aircraft_count = 0; s_status.aircraft_text[0] = 0; unlock();
             s_scan_hz = s_active.scan_start_hz;
             request_tune(s_active.mode == SDR_SCANNER ? s_scan_hz : s_active.frequency_hz);

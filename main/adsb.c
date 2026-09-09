@@ -398,6 +398,7 @@ static void handle_message(adsb_receiver_t *receiver, const uint8_t *message)
                 aircraft->has_position = true;
                 aircraft->latitude = lat;
                 aircraft->longitude = lon;
+                aircraft->last_position_ms = now_ms;
             }
         }
     }
@@ -405,6 +406,13 @@ static void handle_message(adsb_receiver_t *receiver, const uint8_t *message)
     if (receiver->aircraft_cb) {
         receiver->aircraft_cb(aircraft, receiver->aircraft_cb_ctx);
     }
+}
+
+bool adsb_aircraft_position_fresh(const adsb_aircraft_t *a, int64_t now_ms)
+{
+    return a && a->has_position && isfinite(a->latitude) && isfinite(a->longitude) &&
+           fabs(a->latitude) <= 90 && fabs(a->longitude) <= 180 &&
+           now_ms >= a->last_position_ms && now_ms - a->last_position_ms <= 15000;
 }
 
 esp_err_t adsb_receiver_create(const adsb_receiver_config_t *config, adsb_receiver_t **out)

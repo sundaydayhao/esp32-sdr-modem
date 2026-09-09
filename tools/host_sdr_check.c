@@ -144,4 +144,31 @@ static void check_record(void)
     assert(!sdr_record_decode(header,iq,sizeof(iq)-2,&out,&gaps));
     puts("PASS saved IQ: header + payload CRC, every header bit error, corruption and truncation");
 }
-int main(void){check_config();check_record();check_demod();check_adsb();check_modem(SDR_USB);check_modem(SDR_LSB);puts("PASS SDR host checks");return 0;}
+#include "sdr_map.h"
+#include "sdr_presets.h"
+static void check_map(void)
+{
+    sdr_map_view_t v={35,105,20};int x,y;
+    assert(sdr_map_project(&v,400,240,35,105,&x,&y)&&x==200&&y==120);
+    assert(sdr_map_project(&v,400,240,36,106,&x,&y)&&x==220&&y==100);
+    assert(!sdr_map_project(&v,400,240,NAN,105,&x,&y));
+    assert(!sdr_map_project(&v,400,240,95,105,&x,&y));
+    adsb_aircraft_t a[3]={{.has_position=true,.latitude=10,.longitude=179,.last_position_ms=1000},
+        {.has_position=true,.latitude=11,.longitude=-179},{.latitude=-80,.longitude=0}};
+    sdr_map_fit(&v,a,3);assert(fabs(v.longitude)==180&&v.span<10);
+    assert(sdr_map_project(&v,400,240,10,179,&x,&y));
+    assert(sdr_map_project(&v,400,240,11,-179,&x,&y));
+    assert(adsb_aircraft_position_fresh(a,16000));assert(!adsb_aircraft_position_fresh(a,16001));
+    assert(!adsb_aircraft_position_fresh(a,999));assert(!adsb_aircraft_position_fresh(a+2,1000));
+    sdr_map_zoom(&v,.00001);assert(v.span==.25);sdr_map_zoom(&v,1e9);assert(v.span==360);
+    uint16_t *buf=malloc((400*240+2)*sizeof(*buf));assert(buf);buf[0]=0x1234;buf[400*240+1]=0x5678;
+    for(int n=0;n<30;n++){v=(sdr_map_view_t){-85+n*6,170-n*14,n%2?.25:360};
+        sdr_map_draw(buf+1,400,240,&v);sdr_map_marker(buf+1,400,240,0,0,90,false);
+        sdr_map_marker(buf+1,400,240,399,239,270,true);assert(buf[0]==0x1234&&buf[400*240+1]==0x5678);}
+    free(buf);
+    sdr_config_t c={.enabled=true,.decode=true,.monitor=true,.converter_hz=125000000,.volume=35};char error[128];
+    assert(sdr_cn_preset_count==5);
+    for(unsigned n=0;n<sdr_cn_preset_count;n++){assert(sdr_preset_apply(n,&c));assert(sdr_config_validate(&c,error,sizeof(error)));assert(!c.decode&&!c.monitor&&c.frontend==SDR_TUNER);assert(c.frequency_hz>=c.scan_start_hz&&c.frequency_hz<=c.scan_stop_hz);}
+    assert(!sdr_preset_apply(5,&c));puts("PASS map: coordinates, dateline, stale positions, zoom/clipping guards; five CN presets");
+}
+int main(void){check_config();check_record();check_map();check_demod();check_adsb();check_modem(SDR_USB);check_modem(SDR_LSB);puts("PASS SDR host checks");return 0;}

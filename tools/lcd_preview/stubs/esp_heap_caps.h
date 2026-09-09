@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #define MALLOC_CAP_SPIRAM 1
 #define MALLOC_CAP_8BIT 2
+static inline void *heap_caps_calloc(size_t n,size_t size,int caps){(void)caps;return calloc(n,size);}
 static inline void *heap_caps_aligned_alloc(size_t align, size_t size, int caps)
 {
     (void)caps;

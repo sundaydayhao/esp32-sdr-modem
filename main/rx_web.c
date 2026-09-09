@@ -298,7 +298,7 @@ static void web_task(void *arg)
     config.task_priority = 3;
     config.stack_size = 8192;
     config.max_open_sockets = 5;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 2;
     config.send_wait_timeout = 2;

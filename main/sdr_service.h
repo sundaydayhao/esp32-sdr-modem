@@ -22,6 +22,9 @@ typedef struct {
 esp_err_t sdr_service_init(void);
 bool sdr_service_configure(const sdr_config_t *config, char *error, size_t size);
 void sdr_service_get_status(sdr_status_t *status);
+/* Bounded copy of aircraft seen in the last 60 s. Positions expire after 15 s.
+ * A missing/stale position remains in the list, but must not be plotted. */
+size_t sdr_service_get_aircraft(adsb_aircraft_t *out, size_t capacity);
 bool sdr_service_enabled(void);
 bool sdr_service_decode_enabled(void);
 uint32_t sdr_service_generation(void);

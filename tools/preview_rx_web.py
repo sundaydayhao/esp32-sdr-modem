@@ -2,10 +2,22 @@
 import json
 import re
 import struct
+import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--sdr',action='store_true');parser.add_argument('--port',type=int,default=8765)
+args=parser.parse_args()
+rf=dict(boot_id='preview-only',config=dict(enabled=True,decode=False,monitor=False,mode=6,frontend=0,frequency_hz=1090000000,converter_hz=125000000,volume=35,scan_start_hz=433050000,scan_stop_hz=434790000),
+    generation=1,sequence=1,streaming=True,usb_status='HOST TEST / SAMPLE DATA',active_frequency_hz=1090000000,sample_rate_hz=2000000,fft=[0]*512,scan=[0]*512,waveform=[0]*64,
+    audio_frames=0,audio_level=0,modem_content=0,modem_mode='PSK125R',iq_blocks=1234,iq_drops=0,pcm_drops=0,audio_drops=0,dsp_max_us=900,adsb_messages=427,aircraft='',pulses='',ook_frames=0,record_status='Preview only',record_bytes=0,record_gaps=0)
+aircraft=[dict(icao='40621D',callsign='HOST123',has_position=True,latitude=52.2658,longitude=3.9389,altitude_feet=38000,speed_knots=420,heading_degrees=82,age_ms=700,position_age_ms=700),dict(icao='4CA123',callsign='HOST456',has_position=True,latitude=51.35,longitude=4.6,altitude_feet=26000,heading_degrees=150,age_ms=900,position_age_ms=900),dict(icao='ABCDEF',callsign='NOCPR',has_position=False,age_ms=1200)]
+presets=[]
+for name,usage,analysis,center,start,stop,mode in re.findall(r'\{\s*"([^"\n]*)",\s*"([^"\n]*)",\s*"([^"\n]*)",\s*(\d+),\s*(\d+),\s*(\d+),\s*(SDR_\w+)\s*\}',(ROOT/'main/sdr_presets.c').read_text(encoding='utf-8')):
+    presets.append(dict(name=name,usage=usage.replace('\\n','\n'),analysis=analysis.replace('\\n','\n'),center_hz=int(center),start_hz=int(start),stop_hz=int(stop),mode=8 if mode=='SDR_OOK' else 5))
+assert len(presets)==5
 mode_names = re.findall(r'MODE\([^,]+, "([^"]+)"', (ROOT/'main/psk_modes.c').read_text())
 allowed = {9, 10, 11, 12, 20, 21, 25, 26}
 state = dict(boot_id='preview-only', content_epoch=1, content_type=0, mode_id=0, tone_hz=2000,
@@ -35,7 +47,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k,v)
         self.end_headers(); self.wfile.write(data)
     def do_GET(self):
-        if self.path == '/': self.respond((ROOT/'main/rx.html').read_bytes(), 'text/html; charset=utf-8')
+        if self.path in ('/','/sdr','/modem'):
+            file='sdr.html' if self.path=='/sdr' or self.path=='/' and args.sdr else 'rx.html'
+            self.respond((ROOT/'main'/file).read_bytes(), 'text/html; charset=utf-8')
+        elif self.path in ('/theme.css','/dashboard.js','/map-data.json'):
+            name={'/map-data.json':'map_data.json'}.get(self.path,self.path[1:])
+            mime='text/css' if name.endswith('.css') else 'text/javascript' if name.endswith('.js') else 'application/json'
+            self.respond((ROOT/'main'/name).read_bytes(),mime)
+        elif self.path == '/api/sdr': self.respond(rf)
+        elif self.path == '/api/aircraft': self.respond(dict(boot_id='preview-only',aircraft=aircraft if rf['config']['mode']==6 else []))
+        elif self.path == '/api/presets': self.respond(dict(region='CN',presets=presets))
         elif self.path == '/api/status': self.respond(dict(state,mode=mode_names[state['mode_id']]))
         elif self.path == '/api/modes': self.respond([dict(id=i,name=n,image_allowed=i in allowed) for i,n in enumerate(mode_names)])
         elif self.path.startswith('/api/rx?'): self.respond(b'', 'application/octet-stream')
@@ -43,9 +64,12 @@ class Handler(BaseHTTPRequestHandler):
         else: self.respond({},code=404)
     def do_POST(self):
         value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path=='/api/sdr':
+            rf['config']=value;rf['generation']+=1;rf['active_frequency_hz']=value['frequency_hz'];self.respond(rf);return
+        if self.path=='/api/sdr/record':self.respond(dict(queued=True));return
         state.update(content_type=value['content_type'], mode_id=value['mode'],tone_hz=value['tone_hz'])
         state['content_epoch'] += 1
         self.respond({'queued':True},code=202)
 
-print('Local UI fixture at http://127.0.0.1:8765 (sample data only)',flush=True)
-HTTPServer(('127.0.0.1',8765),Handler).serve_forever()
+print(f'Local UI fixture at http://127.0.0.1:{args.port} (sample data only)',flush=True)
+HTTPServer(('127.0.0.1',args.port),Handler).serve_forever()

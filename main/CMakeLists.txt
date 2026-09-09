@@ -6,6 +6,9 @@ idf_component_register(
         "rx_decoder.c"
         "demod_primitives.c"
         "display.c"
+        "ui_theme.c"
+        "sdr_presets.c"
+        "sdr_map.c"
         "psk_codec.c"
         "rx_modem.c"
         "psk_modes.c"
@@ -34,5 +37,5 @@ idf_component_register(
         "sdr_web.c"
     INCLUDE_DIRS "."
     REQUIRES codec2 esp_timer esp_driver_gpio esp_driver_i2s esp_driver_usb_serial_jtag esp32_p4_function_ev_board esp_codec_dev lvgl psk_rtty ft8lib esp_wifi esp_netif esp_event esp_http_server nvs_flash json usb spiffs
-    EMBED_TXTFILES "rx.html" "sdr.html"
+    EMBED_TXTFILES "rx.html" "sdr.html" "map_data.json" "theme.css" "dashboard.js"
 )

@@ -6,6 +6,9 @@
 #include "../../main/sdr_display.c"
 
 static sdr_status_t mock_sdr;
+static adsb_aircraft_t mock_aircraft[ADSB_MAX_AIRCRAFT];
+static size_t mock_aircraft_count;
+size_t sdr_service_get_aircraft(adsb_aircraft_t *out,size_t cap){size_t n=mock_aircraft_count<cap?mock_aircraft_count:cap;memcpy(out,mock_aircraft,n*sizeof(*out));return n;}
 void sdr_service_get_status(sdr_status_t *out) { *out = mock_sdr; }
 bool sdr_service_configure(const sdr_config_t *c, char *error, size_t size)
 {
@@ -200,14 +203,32 @@ int main(void)
     assert(mock_sdr.config.mode==SDR_ADSB&&!mock_sdr.config.decode&&mock_sdr.config.frequency_hz==1090000000);
     mock_sdr.active_frequency_hz=1090000000;mock_sdr.sample_rate_hz=2000000;
     mock_sdr.adsb_messages=427;mock_sdr.aircraft_count=2;
+    mock_aircraft_count=3;
+    mock_aircraft[0]=(adsb_aircraft_t){.icao="40621D",.callsign="HOST123",.has_position=true,.latitude=52.2658,.longitude=3.9389,.has_altitude=true,.altitude_feet=38000};
+    mock_aircraft[1]=(adsb_aircraft_t){.icao="4CA123",.callsign="HOST456",.has_position=true,.latitude=51.35,.longitude=4.6,.has_altitude=true,.altitude_feet=26000};
+    mock_aircraft[2]=(adsb_aircraft_t){.icao="ABCDEF",.callsign="NOCPR"};
     snprintf(mock_sdr.aircraft_text,sizeof(mock_sdr.aircraft_text),"ICAO    CALLSIGN   ALT ft\n40621D  TEST123     38000\n  52.2658  3.9389\n4CA123  TEST456     26000");
     sdr_display_render(&state);screenshot("lcd-sdr-adsb.ppm");
+    assert(aircraft_count==3&&!lv_obj_has_flag(aircraft_pins[0],LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(aircraft_pins[2],LV_OBJ_FLAG_HIDDEN));
+    lv_obj_send_event(aircraft_rows[1],LV_EVENT_CLICKED,NULL);sdr_display_render(&state);
+    assert(!strcmp(selected_icao,"4CA123")&&fabs(map_view.longitude-4.6)<.00001);
+    lv_obj_send_event(map_buttons[1],LV_EVENT_CLICKED,NULL);assert(map_view.span==2);
+    lv_obj_send_event(map_buttons[0],LV_EVENT_CLICKED,NULL);assert(map_auto);
+    mock_aircraft_count=0;map_dirty=true;sdr_display_render(&state);assert(!lv_obj_has_flag(map_empty,LV_OBJ_FLAG_HIDDEN));
+    screenshot("lcd-sdr-adsb-empty.ppm");
     lv_dropdown_set_selected(mode,SDR_WFM);mode_changed(NULL);apply(NULL);
     mock_sdr.active_frequency_hz=100000000;mock_sdr.sample_rate_hz=288000;
     mock_sdr.audio_frames=1500;mock_sdr.audio_level=18000;
     for(unsigned n=0;n<64;++n)mock_sdr.waveform[n]=(int16_t)(18000*sin(2*3.141592653589793*n/24));
     sdr_display_render(&state);assert(!lv_obj_has_flag(wave_chart,LV_OBJ_FLAG_HIDDEN));screenshot("lcd-sdr-fm.ppm");
-    back(NULL);assert(lv_screen_active()==modem_screen);
+    lv_obj_send_event(application[2],LV_EVENT_CLICKED,NULL);assert(app==2&&dirty);
+    apply(NULL);mock_sdr.active_frequency_hz=433920000;sdr_display_render(&state);assert(mock_sdr.config.frequency_hz==433920000);
+    screenshot("lcd-sdr-subghz.ppm");
+    select_option(band,3);apply(NULL);assert(mock_sdr.config.mode==SDR_WATERFALL&&mock_sdr.config.frequency_hz==490000000);
+    mock_sdr.active_frequency_hz=490000000;sdr_display_render(&state);
+    show_advanced(NULL);screenshot("lcd-sdr-settings.ppm");close_advanced(NULL);
+    ui_theme_open(UI_MODEM);assert(lv_screen_active()==modem_screen);
     /* Navigation keeps SDR RX; the modem page explains the TX handoff.
      * These checks exercise the production widgets with mocked service state;
      * physical serial tests separately exercise audio_task and the real gate. */
@@ -230,8 +251,8 @@ int main(void)
     sdr_display_open();sdr_display_render(&state);
     assert(!lv_obj_has_state(enabled,LV_STATE_CHECKED));
     mock_sdr.config.enabled=true;mock_sdr.recording=true;++mock_sdr.generation;
-    back(NULL);display_render(&state,&spectrum);
-    assert(strstr(lv_label_get_text(s_input_hint),"stop recording in RF before Tx / PTT"));
+    ui_theme_open(UI_MODEM);display_render(&state,&spectrum);
+    assert(strstr(lv_label_get_text(s_input_hint),"stop recording in Receiver before Tx / PTT"));
     screenshot("lcd-modem-recording-block.ppm");
     puts("PASS modem input UI: navigation preserves RF, Tx hint/state, return to line Rx, recording warning");
     puts("PASS SDR UI: navigation, HF validation, mode presets, direct decode and ADS-B controls");
