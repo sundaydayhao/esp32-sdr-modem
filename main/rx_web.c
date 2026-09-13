@@ -1,5 +1,6 @@
 #include "rx_web.h"
 #include "sdr_web.h"
+#include "sdr_audio_wifi.h"
 #include "transport.h"
 #include <errno.h>
 #include <inttypes.h>
@@ -19,13 +20,11 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
-static const char *TAG = "rx-web";
+static const char *TAG = "device-api";
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static rx_web_status_t s_status = {.mode = PSK_MODE_BPSK31, .tone_hz = PSK_DEFAULT_TONE_HZ};
 static rx_web_config_cb_t s_config_cb;
 static char s_boot_id[17];
-extern const char rx_html_start[] asm("_binary_rx_html_start");
-extern const char rx_html_end[] asm("_binary_rx_html_end");
 
 void rx_web_set_status(const rx_web_status_t *status)
 {
@@ -46,13 +45,6 @@ static void no_cache(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(req, "X-Boot-Id", s_boot_id);
-}
-
-static esp_err_t page_handler(httpd_req_t *req)
-{
-    no_cache(req);
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_send(req, rx_html_start, rx_html_end - rx_html_start - 1);
 }
 
 static esp_err_t receive_handler(httpd_req_t *req)
@@ -298,14 +290,13 @@ static void web_task(void *arg)
     config.task_priority = 3;
     config.stack_size = 8192;
     config.max_open_sockets = 5;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 2;
     config.send_wait_timeout = 2;
     httpd_handle_t server = NULL;
     err = httpd_start(&server, &config);
     const httpd_uri_t routes[] = {
-        {.uri = "/modem", .method = HTTP_GET, .handler = page_handler},
         {.uri = "/api/rx", .method = HTTP_GET, .handler = receive_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
         {.uri = "/api/modes", .method = HTTP_GET, .handler = modes_handler},
@@ -319,7 +310,9 @@ static void web_task(void *arg)
         if (server) httpd_stop(server);
         ESP_LOGE(TAG, "HTTP startup failed: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "AP %s ready; open http://192.168.4.1 on your phone", CONFIG_PSK_AP_SSID);
+        ESP_LOGI(TAG, "AP %s ready; Android device API at 192.168.4.1 (no web pages)", CONFIG_PSK_AP_SSID);
+        esp_err_t audio=sdr_audio_wifi_start();
+        if(audio!=ESP_OK)ESP_LOGE(TAG,"Wi-Fi audio startup failed: %s",esp_err_to_name(audio));
     }
     vTaskDeleteWithCaps(NULL);
 }

@@ -14,6 +14,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "usb_host_service.h"
 
 #define RTLSDR_VID_REALTEK        0x0bda
@@ -143,7 +144,7 @@ static const r82xx_freq_range_t r82xx_freq_ranges[] = {
 struct rtlsdr {
     rtlsdr_config_t cfg;
     rtlsdr_config_t pending_config;
-    bool config_pending, interface_claimed, fault;
+    bool config_pending, interface_claimed, fault, reconnect_pending;
     unsigned in_flight;
     usb_transfer_t *control;
     SemaphoreHandle_t control_done;
@@ -1719,10 +1720,38 @@ static void rtlsdr_task(void *arg)
     }
 
     set_status(dev, "WAITING FOR RTL2832U");
+    /* A dongle left powered across a P4 reset can fail the first short
+     * device descriptor request. IDF then waits for a new connection.
+     * Retry the root port once, before any client device has been seen;
+     * never cycle an established stream or continuously poll an empty port. */
+    int64_t startup_retry_at = esp_timer_get_time() + 6000000;
     while (!dev->shutting_down) {
         ret = usb_host_client_handle_events(dev->client, pdMS_TO_TICKS(100));
         if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
             ESP_LOGW(TAG, "client events: %s", esp_err_to_name(ret));
+        }
+
+        portENTER_CRITICAL(&dev->tune_lock);
+        bool reconnect = dev->reconnect_pending;
+        dev->reconnect_pending = false;
+        portEXIT_CRITICAL(&dev->tune_lock);
+        if (dev->new_dev_pending || reconnect) startup_retry_at = 0;
+        if (startup_retry_at && esp_timer_get_time() >= startup_retry_at) {
+            startup_retry_at = 0;
+            reconnect = true;
+            ESP_LOGW(TAG, "No device enumerated at startup; retrying root port once");
+        }
+        if (reconnect) {
+            if (!close_device(dev)) {
+                portENTER_CRITICAL(&dev->tune_lock);
+                dev->reconnect_pending = true;
+                portEXIT_CRITICAL(&dev->tune_lock);
+                continue;
+            }
+            dev->fault = dev->gone = dev->new_dev_pending = false;
+            set_status(dev, "USB PORT RESTARTING");
+            ret = usb_host_service_restart_port();
+            set_status(dev, ret == ESP_OK ? "WAITING FOR RTL2832U" : "USB PORT RESTART FAILED");
         }
 
         if (dev->new_dev_pending) {
@@ -1814,7 +1843,7 @@ esp_err_t rtlsdr_start(rtlsdr_t **out_dev,
         if (dev->control) usb_host_transfer_free(dev->control);
         vSemaphoreDelete(dev->done_sem); free(dev); return ESP_ERR_NO_MEM;
     }
-    BaseType_t ok = xTaskCreatePinnedToCore(rtlsdr_task, "rtlsdr", 8192, dev, 6, &dev->task, 0);
+    BaseType_t ok = xTaskCreatePinnedToCore(rtlsdr_task, "rtlsdr", 8192, dev, USB_HOST_CLIENT_PRIORITY, &dev->task, 0);
     if (ok != pdTRUE) {
         vSemaphoreDelete(dev->control_done); usb_host_transfer_free(dev->control);
         vSemaphoreDelete(dev->done_sem);
@@ -1850,6 +1879,16 @@ esp_err_t rtlsdr_configure(rtlsdr_t *dev, const rtlsdr_config_t *config)
     portENTER_CRITICAL(&dev->tune_lock);
     dev->pending_config = *config; dev->config_pending = true;
     portEXIT_CRITICAL(&dev->tune_lock);
+    return ESP_OK;
+}
+
+esp_err_t rtlsdr_reconnect(rtlsdr_t *dev)
+{
+    if (!dev || dev->shutting_down) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&dev->tune_lock);
+    dev->reconnect_pending = true;
+    portEXIT_CRITICAL(&dev->tune_lock);
+    if (dev->client) usb_host_client_unblock(dev->client);
     return ESP_OK;
 }
 

@@ -7,6 +7,7 @@ idf_component_register(
         "demod_primitives.c"
         "display.c"
         "ui_theme.c"
+        "ui_i18n.c" "ui_font_14.c" "ui_font_18.c" "ui_font_26.c"
         "sdr_presets.c"
         "sdr_map.c"
         "psk_codec.c"
@@ -31,11 +32,15 @@ idf_component_register(
         "dsp.c"
         "sdr_types.c"
         "sdr_record.c"
+        "sdr_storage.c"
         "sdr_demod.c"
         "sdr_service.c"
+        "sdr_audio_stream.c"
+        "sdr_audio_wifi.c"
+        "sdr_scan.c"
         "sdr_display.c"
         "sdr_web.c"
+        "sdr_serial.c"
     INCLUDE_DIRS "."
-    REQUIRES codec2 esp_timer esp_driver_gpio esp_driver_i2s esp_driver_usb_serial_jtag esp32_p4_function_ev_board esp_codec_dev lvgl psk_rtty ft8lib esp_wifi esp_netif esp_event esp_http_server nvs_flash json usb spiffs
-    EMBED_TXTFILES "rx.html" "sdr.html" "map_data.json" "theme.css" "dashboard.js"
+    REQUIRES codec2 esp_timer esp_driver_gpio esp_driver_i2s esp_driver_usb_serial_jtag esp32_p4_function_ev_board esp_codec_dev lvgl psk_rtty ft8lib esp_wifi esp_netif esp_event esp_http_server nvs_flash json usb fatfs esp_driver_sdmmc sdmmc
 )

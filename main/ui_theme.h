@@ -20,6 +20,10 @@ void ui_theme_open(ui_page_t page);
 void ui_theme_control(lv_obj_t *obj);
 void ui_theme_card(lv_obj_t *obj);
 void ui_theme_button(lv_obj_t *obj, bool primary);
+lv_obj_t *ui_theme_frequency_cursor(lv_obj_t *parent, int height);
 uint16_t ui_theme_signal_color(uint8_t level);
+/* RF waterfall contrast; initialize/reset floor_q8 to -1 on retune. */
+uint8_t ui_theme_signal_floor(const uint8_t *bins, size_t count, int *floor_q8);
+uint8_t ui_theme_signal_level(uint8_t value, uint8_t floor);
 lv_obj_t *ui_theme_label(lv_obj_t *parent, const char *text, int x, int y, int w, const lv_font_t *font,
                          uint32_t color);

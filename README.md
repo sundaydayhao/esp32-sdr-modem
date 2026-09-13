@@ -13,22 +13,22 @@
 | AM / WFM / NFM | 包络/相位差检波、滤波、抽取；WFM 50 µs 去加重；48 kHz 单声道与音频波形 |
 | Waterfall | 512 点 IQ FFT、频谱与瀑布图；触摸选择 RF 标记，再 Apply 调谐 |
 | ADS-B | 1090 MHz、2 MS/s；DF17/18 CRC、呼号/高度/速度、成对 airborne CPR 位置及飞机列表 |
-| Scanner | 自定义起止频率、重叠分段调谐与峰值频谱 |
+| Scanner | RTL-SDR 实测分段扫描、覆盖率/轮数、峰值保持、暂停/恢复、一键转到最强频点采集 IQ |
 | OOK pulses | 原始 OOK/ASK 脉冲宽度与帧计数；尚未识别具体传感器协议 |
-| IQ Record | 单次 512 KiB CU8；PSRAM 缓冲后保存 SPIFFS；重启校验恢复；下载 SigMF 数据及元数据 |
+| IQ Record | RTL-SDR 原始 CU8，288 kS/s，连续保存到 SD；独立文件、CRC 校验、从 SD 重放频谱/音频；下载 SigMF |
 
 `2x8PSK1200F` 和 AP580 保持移除。语音使用单载波 `8PSK1200F` 或 `8PSK1000F`。当前语音空口为本项目的 Codec2/PSK 协议，完整 FreeDV 700D/700E 互通仍属后续工作。
 
 ## 接线与使用
 
-1. 给 P4 和屏幕供电，将 RTL-SDR 插入板载高速 **USB Type-A Host**。调试/Serial-JTAG 使用对应调试口；旧版开发板的接口形态以其原理图为准。
-2. 上电默认 WFM、100 MHz、Tuner。界面显示真实 USB 状态，没有接收棒时显示无数据。
-3. 接收短波时选择 USB 或 LSB，输入 RF 频率，并按下表选择短波输入方式，点击 **Apply**。
-4. 勾选 **Modem decode**，在 **Modem / Codec2** 页选择数字模式、音频中心和 Text/Image/Audio。SSB PCM 在设备内进入解码器，无需音频线回接。PSK 音频中心可先用 1500～2000 Hz；Codec2 固定 2000 Hz。
-5. 普通 SSB/FM 勾选 **Speaker** 监听。收到 Codec2 时播放解码后的语音。监听音量不影响数字解码输入。
-6. Modem / Codec2 页选择 **Tx** 或按住 **PTT** 时，自动关闭 SDR 输入并切到板载麦克风/线路音频。正在录制 IQ 时需先在 Receiver 页停止录制。页面底部显示当前输入及操作提示；回到 **Rx** 后保持线路音频，要恢复射频接收，在 Receiver 页勾选 **SDR input** 并 Apply。RTL-SDR 本身只能接收。
-7. **ADS-B** 页点击 Apply 后接收 1090 MHz 报文，右侧为飞机列表，中央离线地图可点选定位、拖动、缩放。无新坐标的飞机只显示在列表；没有接收棒时不显示测试飞机。
-8. **Sub-GHz** 页默认中国大陆目录，提供 433.92、315、431、490、868.30 MHz 接收参考及用途说明；选择预设后 Apply。当前分析能力为 OOK 脉冲、频谱、IQ 和扫描，尚无具体传感器协议解码。
+1. 将 RTL-SDR 插入板载高速 USB Host（当前实测 J18），给 P4 和屏幕供电。调试口为独立 Serial/JTAG。
+2. 顶部只有“接收机”和“数字通信 / Codec2”两页。接收机的“接收模式”统一选择 USB/LSB、AM/WFM/NFM、频谱、ADS-B、扫描、Sub-GHz、IQ 采集和 SD IQ 重放；选择后自动切换设置及显示内容，并应用接收模式。单独改频后点击“应用频率”。
+3. 上电默认 WFM、100 MHz。切换到音频模式会开启监听；“接收设置”可选择前端、上变频器本振及数字解码，监听开关和音量只影响设备 DAC。普通接收棒未接短波前端时先调试 FM、ADS-B、433 MHz 等调谐器范围内的信号。
+4. ADS-B 自动调到 1090 MHz、2 MS/s。地图显示有效位置，列表也保留暂未解出坐标的飞机。点选飞机定位，拖动和缩放查看道路、地名和比例尺；没有接收数据时不显示测试飞机。
+5. Sub-GHz 提供中国大陆接收参考目录及 OOK 脉冲、频谱、NFM 音频分析。原始脉冲计数不等于具体遥控器协议解码；FSK 信号可用频谱和 IQ 采集检查。目录说明不构成发射授权。
+6. “IQ 采集至 SD”每次在卡的 `IQ` 目录新建一对 `IQnnnnnn.IQ`/`.MET`，约 0.55 MiB/s。点击停止，等待保存完成。“SD IQ 重放”选择文件和解调方式后播放，先验证 CRC，再按原采样率读取；重放是设备内频谱/音频分析。录制、保存或重放期间先停止当前操作再切换模式。
+7. “频段扫描”填写起止 MHz 并开始，可暂停/继续和转到最强频点采集 IQ。显示的是分段实测峰值保持，不能代表全频段同时采样，也不是校准后的 dBm。
+8. USB/LSB 可启用数字解码，把 48 kHz PCM 在设备内送入数字通信页；Codec2 使用 2000 Hz 音频中心。在 LCD 选择 Tx 或按住 PTT 会关闭 SDR 输入并切到线路音频；返回 Rx 后需重新启用 SDR。RTL-SDR 仅接收，手机端当前不提供 PTT。
 
 | RF 输入 | 短波方式 |
 | --- | --- |
@@ -41,14 +41,20 @@
 
 一只接收棒同时只有一个中心频率和采样率。ADS-B、FM、扫描通过切换配置运行；返回数字模式页面不会自动改变 RF 配置。
 
-## 网页与录制
+## Android App 与 SD 文件
 
-连接热点 **ESP32-SDR**（默认密码 `pskmodem32`），打开 `http://192.168.4.1`。
+2026-09-11 新版固件已烧录，App 已安装到实际手机，Wi-Fi 控制、SD 录制/重放及 CRC 导出已验证，详见 [本次验收记录](docs/NATIVE_UI_VALIDATION_20260911.md)。
 
-- `/` 或 `/sdr`：射频设置、瀑布图、FM 波形、ADS-B、扫描、脉冲和 IQ 录制。
-- `/modem`：数字模式、文本、图像和 Codec2 诊断。
-- 录制结束后等待显示 Flash 保存完成，再断电。保存失败时仍能下载 RAM 中的数据。新录制替换上一份录制。
-- 将下载的 `rtl-iq.sigmf-data` 与 `rtl-iq.sigmf-meta` 放在同一目录。CU8 是交错无符号 8-bit I/Q，不是 WAV。
+当前固件只提供设备 API，已移除 `/`、`/sdr`、`/modem` 网页。手机使用 `mobile/android` 的原生 Java App，无 WebView。
+
+1. 安装 `build/android/sdr-studio-0.1.0-debug.apk`，连接热点 **ESP32-SDR**（密码 `pskmodem32`）；手机提示 WLAN 无互联网时选择继续使用。
+2. 打开“SDR 工作台”，默认设备地址 `192.168.4.1`，连接后显示真实状态并直接控制板子。
+3. 手机支持接收模式、频率、频谱/瀑布图、ADS-B 地图及列表、Sub-GHz、扫描、SD 录制/重放，以及数字通信接收设置、文本/图像/Codec2 诊断。
+4. “导出 IQ”通过系统文件选择器保存 ZIP，包含同名 `.sigmf-data` 和 `.sigmf-meta`，校验字节数与 CRC。SD 原文件仍保留。CU8 是交错无符号 8-bit I/Q，不是 WAV。
+
+LCD 离线地图内置深圳核心及周边道路、地名（22.40–22.85°N、113.75–114.45°E），最小经度跨度 0.01°；区域外保留世界海岸线并提示缺少详细地图。Android 使用相同离线区域，联网时按当前视野加载 OpenStreetMap 街道瓦片，可使用手机移动网络；网络不可达时回退到缓存和离线底图。地图来源、ODbL 许可和构建说明见 [Android 说明](mobile/android/README.md)。
+
+FreeDV 桌面程序与本项目的 Codec2/PSK 空口不是同一协议；安装 FreeDV 不代表已经实现 FreeDV 700D/700E 互通。
 
 ## 构建与验证
 
@@ -62,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File tools/run_rate_checks.ps1
 powershell -ExecutionPolicy Bypass -File tools/run_content_checks.ps1
 powershell -ExecutionPolicy Bypass -File tools/run_rsid_checks.ps1
 powershell -ExecutionPolicy Bypass -File tools/preview_lcd.ps1
-node tools/check_sdr_web.cjs
+powershell -ExecutionPolicy Bypass -File tools/build_android.ps1 -Test
 ```
 
 固件在 `build-sdr/esp32_sdr_modem.bin`。Windows 脚本默认使用本机 Espressif 5.5.5 和 Cygwin GCC；其他环境激活 ESP-IDF 后运行 `idf.py -B build-sdr build`。
@@ -73,4 +79,6 @@ node tools/check_sdr_web.cjs
 
 界面预览来自运行生产 LVGL 代码的主机测试，信号及飞机均为 HOST TEST 数据：[SSB](docs/screenshots/lcd-sdr-ssb.png)、[ADS-B 地图](docs/screenshots/lcd-sdr-adsb.png)、[FM](docs/screenshots/lcd-sdr-fm.png)、[Sub-GHz](docs/screenshots/lcd-sdr-subghz.png)、[Modem / Codec2](docs/screenshots/lcd-audio.png)。公共主题、页面管理、频段目录、地图来源与 UI skills 参考见 [界面维护说明](docs/SDR_PORT.md#统一界面ads-b-地图与中国大陆频段2026-09-09)。
 
-USB 枚举、真实调谐、持续吞吐、接收音质和屏幕/网络并发仍需实机验证。主机合成 IQ 结果不代表真实短波性能或 FreeDV 互通验收。
+IQ/Scan 的主机布局预览：[IQ 采集](docs/screenshots/lcd-sdr-iq.png)、[频段扫描](docs/screenshots/lcd-sdr-scan.png)。实物 433.92 MHz IQ 已导出并通过 CRC 校验，433.05～434.79 MHz 及 88～108 MHz 扫描均已覆盖全频段，详见移植说明中的 IQ/Scan 验收记录。
+
+2026-09-10 已连接真实 R820T/R820T2 接收棒，验证 106.2 MHz FM 的 USB/IQ/48 kHz PCM 链路，并解出真实 1090 MHz ADS-B 报文和飞机坐标；修复插棒时的 DMA 内存不足、关闭设备断言，以及复位后的枚举恢复。实测范围、日志和音频采集方法见 [上板记录](docs/SDR_PORT.md#rtl-sdr-实物接收与重启修复2026-09-10)。扬声器听感、短波前端和屏幕/网络/录制并发仍需验收；主机合成 IQ 不代表真实短波性能或 FreeDV 互通。

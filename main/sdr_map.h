@@ -7,6 +7,11 @@ typedef struct
 {
     double latitude, longitude, span;
 } sdr_map_view_t;
+typedef struct {const char *name; double latitude, longitude; unsigned rank;} sdr_map_place_t;
+const sdr_map_place_t *sdr_map_places(size_t *count);
+const sdr_map_place_t *sdr_map_nearest(double latitude,double longitude,double *distance_km);
+bool sdr_map_has_detail(const sdr_map_view_t *view);
+double sdr_map_meters_per_pixel(const sdr_map_view_t *view,int width);
 bool sdr_map_project(const sdr_map_view_t *view, int width, int height, double latitude, double longitude, int *x,
                      int *y);
 void sdr_map_fit(sdr_map_view_t *view, const adsb_aircraft_t *aircraft, size_t count);

@@ -1,0 +1,28 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'cn.sdrstudio.app'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'cn.sdrstudio.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+        testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+    testOptions { unitTests.includeAndroidResources = true }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/deviceAssets')
+}
+tasks.register('syncDeviceAssets', Copy) {
+    from '../../../main'
+    include 'sdr_map_region.json', 'ui_zh.json'
+    into layout.buildDirectory.dir('generated/deviceAssets')
+}
+tasks.named('preBuild').configure { dependsOn 'syncDeviceAssets' }
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+}

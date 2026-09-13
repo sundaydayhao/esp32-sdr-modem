@@ -25,6 +25,7 @@ bool sdr_preset_apply(unsigned index, sdr_config_t *c)
     c->scan_start_hz = p->start_hz;
     c->scan_stop_hz = p->stop_hz;
     c->frontend = SDR_TUNER;
+    c->enabled = true;
     c->decode = false;
     c->monitor = false;
     return true;

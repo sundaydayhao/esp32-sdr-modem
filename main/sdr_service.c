@@ -1,6 +1,7 @@
 #include "sdr_service.h"
 #include "sdr_demod.h"
 #include "sdr_record.h"
+#include "sdr_scan.h"
 #include "rtlsdr.h"
 #include "usb_host_service.h"
 #include "dsp.h"
@@ -8,20 +9,19 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_spiffs.h"
-#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
 #define IQ_BYTES 8192U
 #define IQ_BLOCKS 16U
 #define PCM_SAMPLES 128U
-typedef struct { uint32_t generation, sequence; size_t bytes; uint8_t iq[IQ_BYTES]; } iq_block_t;
+typedef struct { uint32_t generation, sequence; size_t bytes; bool replay; uint8_t iq[IQ_BYTES]; } iq_block_t;
 typedef struct { uint32_t generation; int16_t samples[PCM_SAMPLES]; } pcm_block_t;
 static const char *TAG = "sdr";
 static SemaphoreHandle_t s_lock;
@@ -29,105 +29,95 @@ static QueueHandle_t s_free, s_iq, s_decode, s_monitor;
 static rtlsdr_t *s_radio;
 static sdr_status_t s_status;
 static sdr_demod_t *s_demod;
+static sdr_audio_stream_t *s_phone;
 static dsp_waterfall_t *s_fft;
 static adsb_receiver_t *s_adsb;
 static adsb_aircraft_t s_aircraft[ADSB_MAX_AIRCRAFT];
-static uint8_t *s_record;
-static sdr_config_t s_record_config;
-static unsigned s_record_readers;
-static bool s_store_available;
-static uint32_t s_record_id, s_saved_id;
+static bool s_replay_source,s_replay_reserved;
+static uint32_t s_replay_processed,s_replay_sequence;
 static uint32_t s_callback_sequence, s_generation = 1;
 static sdr_config_t s_active;
 static uint32_t s_active_generation, s_active_rf, s_last_sequence;
-static int64_t s_settle_until, s_last_samples, s_scan_next;
-static uint32_t s_scan_hz;
-static bool s_have_sequence;
+static int64_t s_settle_until, s_last_samples;
+static uint32_t s_scan_hz, s_scan_index, s_scan_frames;
+static uint8_t *s_scan_seen;
+static bool s_have_sequence, s_tune_pending;
 static uint32_t s_ook_length, s_ook_count, s_ook_frame_count;
 static bool s_ook_high;
 static float s_ook_floor = 0.01f, s_ook_peak = 0.05f;
 static uint32_t s_ook_widths[64];
+static int64_t s_ook_last_frame;
 
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
-static void storage_init(void)
+void sdr_service_phone_audio_subscribe(bool active)
 {
-    esp_vfs_spiffs_conf_t cfg = {.base_path="/sdr",.partition_label="sdr_store",.max_files=3,.format_if_mount_failed=false};
-    esp_err_t err = esp_vfs_spiffs_register(&cfg);
-    if (err != ESP_OK) {
-        /* Only initialize a completely erased partition. A damaged/nonblank
-         * filesystem is preserved for recovery instead of being formatted. */
-        const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "sdr_store");
-        bool erased = part != NULL; uint8_t probe[256];
-        if (part) for (size_t off=0; erased && off<part->size; off+=sizeof(probe)) {
-            if (esp_partition_read(part,off,probe,sizeof(probe)) != ESP_OK) { erased=false; break; }
-            for(unsigned n=0;n<sizeof(probe);++n) if(probe[n]!=255){erased=false;break;}
-        }
-        if (erased && esp_spiffs_format("sdr_store") == ESP_OK) err=esp_vfs_spiffs_register(&cfg);
-    }
-    s_store_available = err == ESP_OK;
-    if (!s_store_available) { ESP_LOGW(TAG,"IQ flash store unavailable; RAM capture still works"); return; }
-    FILE *f=fopen("/sdr/latest.sdr","rb");
-    if(!f)f=fopen("/sdr/pending.sdr","rb");
-    if(!f)return;
-    uint8_t h[SDR_RECORD_HEADER_BYTES]; bool ok=fread(h,sizeof(h),1,f)==1;
-    size_t bytes=ok?sdr_record_payload_size(h):0;uint32_t gaps=0;
-    if(ok)ok=bytes>0 && fread(s_record,1,bytes,f)==bytes && fgetc(f)==EOF &&
-             sdr_record_decode(h,s_record,bytes,&s_record_config,&gaps);
-    fclose(f);
-    if(ok) {
-        s_status.record_bytes=bytes;s_status.record_drops=gaps;s_status.record_ready=true;
-        snprintf(s_status.record_status,sizeof(s_status.record_status),"Saved IQ restored from flash");
-    }
-
+    if(!s_lock||!s_phone)return;
+    lock();s_status.wifi_audio_subscribed=active;sdr_audio_gap(s_phone);unlock();
 }
-static void storage_worker(void *arg)
+bool sdr_service_phone_audio_take(sdr_audio_frame_t *frame,uint32_t *drops)
 {
-    (void)arg;
-    for (;;) {
-        lock(); bool save=s_store_available && s_status.record_ready && !s_status.recording && s_saved_id!=s_record_id;
-        uint32_t id=s_record_id, bytes=s_status.record_bytes, gaps=s_status.record_drops;
-        sdr_config_t config=s_record_config;
-        if(save)++s_record_readers;
-        unlock();
-        if(save) {
-            uint8_t h[SDR_RECORD_HEADER_BYTES];sdr_record_encode(h,&config,s_record,bytes,gaps);
-            FILE *f=fopen("/sdr/pending.sdr","wb");bool ok=f && fwrite(h,sizeof(h),1,f)==1;
-            for(size_t off=0;ok && off<bytes;off+=4096){size_t n=bytes-off;if(n>4096)n=4096;ok=fwrite(s_record+off,1,n,f)==n;vTaskDelay(1);}
-            if(f && fclose(f)!=0)ok=false;
-            if(ok) {
-                /* Keep the new complete file until the previous capture can
-                 * be replaced. Downloads use the immutable RAM snapshot. */
-                (void)remove("/sdr/latest.sdr");ok=rename("/sdr/pending.sdr","/sdr/latest.sdr")==0;
-            }
-            lock();s_saved_id=id;--s_record_readers;
-            snprintf(s_status.record_status,sizeof(s_status.record_status),"%s",ok?"IQ saved to flash; download ready":"Flash save failed; download RAM capture");
-            unlock();
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+    if(!s_lock||!s_phone){memset(frame,0,sizeof(*frame));*drops=0;return false;}
+    lock();
+    bool live=s_status.wifi_audio_subscribed&&s_status.config.enabled&&s_status.config.mode==SDR_WFM&&
+        !s_replay_source&&!s_status.tx_busy&&s_status.streaming;
+    sdr_audio_sync(s_phone,s_generation,s_status.config.frequency_hz,live);
+    bool data=sdr_audio_take(s_phone,frame,(uint32_t)(esp_timer_get_time()/1000));
+    *drops=s_status.wifi_audio_drops=s_phone->drops;unlock();return data;
+}
+void sdr_service_phone_audio_sent(bool ok,bool pcm)
+{
+    lock();if(!ok)++s_status.wifi_audio_errors;else if(pcm)++s_status.wifi_audio_packets;unlock();
 }
 
+static uint32_t replay_begin(const sdr_record_info_t *info,sdr_mode_t mode)
+{
+    lock();
+    if(s_status.tx_busy||!s_replay_reserved){unlock();return 0;}
+    s_replay_source=true;s_replay_processed=s_replay_sequence=0;
+    unsigned volume=s_status.config.volume;
+    s_status.config=info->config;s_status.config.mode=mode;s_status.config.enabled=true;
+    s_status.config.decode=false;s_status.config.monitor=sdr_mode_has_audio(mode);s_status.config.volume=volume;
+    s_status.generation=++s_generation;++s_status.view_generation;s_status.streaming=false;
+    uint32_t generation=s_generation;unlock();return generation;
+}
+static bool replay_push(const uint8_t *iq,size_t bytes,uint32_t generation)
+{
+    iq_block_t *b;
+    if(bytes>IQ_BYTES||xQueueReceive(s_free,&b,pdMS_TO_TICKS(50))!=pdTRUE)return false;
+    b->generation=generation;b->sequence=++s_replay_sequence;b->bytes=bytes;b->replay=true;memcpy(b->iq,iq,bytes);
+    if(xQueueSend(s_iq,&b,pdMS_TO_TICKS(50))==pdTRUE)return true;
+    xQueueSend(s_free,&b,0);return false;
+}
+static bool replay_drained(uint32_t generation,uint32_t bytes)
+{lock();bool ok=generation==s_generation&&s_replay_processed>=bytes&&uxQueueMessagesWaiting(s_monitor)==0;unlock();return ok;}
+static void replay_end(void)
+{
+    lock();s_replay_reserved=false;
+    if(s_replay_source){s_status.streaming=false;s_status.config.enabled=false;s_status.generation=++s_generation;}
+    unlock();
+}
 static void usb_status(const char *text, void *ctx)
 {
     (void)ctx; lock(); snprintf(s_status.usb_status, sizeof(s_status.usb_status), "%s", text);
-    if (strstr(text, "DISCONNECTED") || strstr(text, "FAILED") || strstr(text, "ERROR")) {
+    if (!s_replay_source && (strstr(text, "DISCONNECTED") || strstr(text, "FAILED") || strstr(text, "ERROR"))) {
         s_status.streaming = false; ++s_callback_sequence;
-        if(s_status.recording){s_status.recording=false;s_status.record_ready=s_status.record_bytes>0;++s_status.record_drops;
-            snprintf(s_status.record_status,sizeof(s_status.record_status),"USB interrupted; partial IQ capture");}
+        if(!s_replay_source)sdr_storage_stop("USB interrupted; finishing partial SD capture");
     }
     unlock();
 }
 static void iq_received(const uint8_t *iq, size_t len, uint32_t generation, void *ctx)
 {
     (void)ctx;
+    lock(); s_status.usb_bytes += len; bool ignore=s_replay_source; unlock();
+    if(ignore)return;
     iq_block_t *block;
     uint32_t seq = ++s_callback_sequence;
     if (len > IQ_BYTES || (len & 1) || xQueueReceive(s_free, &block, 0) != pdTRUE) {
         lock(); ++s_status.iq_drops; unlock(); return;
     }
-    block->bytes = len; block->generation = generation; block->sequence = seq;
+    block->bytes = len; block->replay=false; block->generation = generation; block->sequence = seq;
     memcpy(block->iq, iq, len);
     if (xQueueSend(s_iq, &block, 0) != pdTRUE) {
         xQueueSend(s_free, &block, 0); lock(); ++s_status.iq_drops; unlock();
@@ -137,9 +127,16 @@ static void pcm_received(const int16_t *pcm, size_t count, void *ctx)
 {
     (void)ctx;
     if (count != PCM_SAMPLES) return;
+    audio_input_capture_feed(pcm, count);
     pcm_block_t block = {.generation = s_active_generation};
     memcpy(block.samples, pcm, sizeof(block.samples));
     lock();
+    if(s_phone){
+        bool live=s_status.wifi_audio_subscribed&&s_status.config.enabled&&s_status.config.mode==SDR_WFM&&
+            !s_replay_source&&!s_status.tx_busy;
+        sdr_audio_sync(s_phone,s_generation,s_status.config.frequency_hz,live);
+        if(s_active_generation==s_generation)sdr_audio_push(s_phone,pcm,count,(uint32_t)(esp_timer_get_time()/1000));
+    }
     if ((++s_status.audio_frames % 40) == 0) {
         uint32_t peak=0;
         for(unsigned n=0;n<64;++n){s_status.waveform[n]=pcm[n*2];uint32_t a=pcm[n*2]<0?-(int32_t)pcm[n*2]:pcm[n*2];if(a>peak)peak=a;}
@@ -157,15 +154,15 @@ static void fft_received(const uint8_t *bins, size_t count, void *ctx)
 {
     (void)ctx;
     if (count != SDR_FFT_BINS) return;
-    lock(); memcpy(s_status.fft, bins, count); ++s_status.waterfall_sequence;
+    lock();
+    if(s_generation!=s_active_generation){unlock();return;}
+    memcpy(s_status.fft, bins, count); ++s_status.waterfall_sequence;
     if (s_active.mode == SDR_SCANNER) {
-        uint64_t span = (uint64_t)s_active.scan_stop_hz - s_active.scan_start_hz;
-        for (size_t n = 0; n < count; ++n) {
-            int64_t hz = (int64_t)s_active_rf - SDR_IQ_RATE / 2 + (int64_t)n * SDR_IQ_RATE / count;
-            if (hz < s_active.scan_start_hz || hz >= s_active.scan_stop_hz) continue;
-            size_t x = (uint64_t)(hz - s_active.scan_start_hz) * SDR_FFT_BINS / span;
-            if (bins[n] > s_status.scan[x]) s_status.scan[x] = bins[n];
-        }
+        sdr_scan_accumulate(&s_active,s_active_rf,bins,s_status.scan,s_scan_seen,
+                            &s_status.scan_peak_hz,&s_status.scan_peak_level);
+        unsigned seen=0;for(unsigned n=0;n<SDR_FFT_BINS;++n)seen+=s_scan_seen[n];
+        s_status.scan_coverage=seen*100/SDR_FFT_BINS;
+        ++s_scan_frames;
     }
     unlock();
 }
@@ -237,8 +234,13 @@ static void ook_push(const uint8_t *iq, size_t bytes)
             char text[512] = "Raw OOK pulse widths (us):\n"; size_t used = strlen(text);
             for (unsigned k = 0; k < s_ook_count && used < sizeof(text) - 16; ++k)
                 used += snprintf(text + used, sizeof(text) - used, "%lu ", (unsigned long)s_ook_widths[k]);
-            lock(); s_status.ook_pulses = s_ook_count; s_status.ook_frames = ++s_ook_frame_count;
-            memcpy(s_status.pulses_text, text, sizeof(text)); unlock(); s_ook_count = 0;
+            lock();
+            if(s_generation==s_active_generation && s_status.config.mode==SDR_OOK){
+                s_status.ook_pulses = s_ook_count; s_status.ook_frames = ++s_ook_frame_count;
+                s_ook_last_frame=esp_timer_get_time();
+                memcpy(s_status.pulses_text, text, sizeof(text));
+            }
+            unlock(); s_ook_count = 0;
         }
     }
 }
@@ -249,39 +251,63 @@ static void request_tune(uint32_t rf)
     rtlsdr_config_t radio = {.center_freq_hz = hardware, .sample_rate_hz = sdr_sample_rate(s_active.mode),
         .baseband_init = true, .frontend = s_active.frontend, .generation = s_active_generation};
     s_active_rf = rf; s_have_sequence = false;
+    s_tune_pending=!s_replay_source;s_scan_frames=0;
+    if(s_replay_source)s_settle_until=0;
     dsp_waterfall_reset(s_fft);
-    s_settle_until = esp_timer_get_time() + 250000;
-    if (s_radio) (void)rtlsdr_configure(s_radio, &radio);
+    if (s_radio && s_active.enabled && !s_replay_source) (void)rtlsdr_configure(s_radio, &radio);
     lock(); s_status.streaming = false; s_status.sample_rate_hz = radio.sample_rate_hz; unlock();
 }
 static void worker(void *arg)
 {
     (void)arg;
-    int64_t last_publish = 0;
+    iq_block_t *pending=NULL;
+    int64_t last_publish = 0, last_yield = esp_timer_get_time();
     for (;;) {
         lock(); uint32_t generation = s_generation; sdr_config_t requested = s_status.config; unlock();
         if (generation != s_active_generation) {
+            audio_input_capture_stop();
+            bool keep_scan=sdr_scan_same_range(&s_active,&requested);
             s_active = requested; s_active_generation = generation;
             xQueueReset(s_decode); xQueueReset(s_monitor);
             s_ook_count = s_ook_length = 0; s_ook_high = false;
+            s_ook_floor=0.01f;s_ook_peak=0.05f;s_ook_frame_count=0;
             sdr_demod_init(s_demod, s_active.mode, pcm_received, NULL);
             adsb_receiver_reset(s_adsb);
-            lock(); memset(s_aircraft, 0, sizeof(s_aircraft));memset(s_status.scan, 0, sizeof(s_status.scan));
+            lock(); memset(s_aircraft, 0, sizeof(s_aircraft));
+            s_status.ook_frames=s_status.ook_pulses=0;s_status.pulses_text[0]=0;s_ook_last_frame=0;
+            if(!keep_scan){
+                memset(s_status.scan,0,sizeof(s_status.scan));memset(s_scan_seen,0,SDR_FFT_BINS);
+                s_scan_index=0;s_status.scan_sweeps=s_status.scan_coverage=s_status.scan_peak_hz=0;
+                s_status.scan_peak_level=0;
+            }
+            s_status.scan_steps=s_active.mode==SDR_SCANNER?sdr_scan_steps(&s_active):0;
+            s_status.scan_step=s_status.scan_steps?s_scan_index+1:0;
             s_status.aircraft_count = 0; s_status.aircraft_text[0] = 0; unlock();
-            s_scan_hz = s_active.scan_start_hz;
+            s_scan_hz = sdr_scan_center(&s_active,s_scan_index);
             request_tune(s_active.mode == SDR_SCANNER ? s_scan_hz : s_active.frequency_hz);
-            s_scan_next = esp_timer_get_time() + 500000;
         }
         s_active.monitor=requested.monitor;s_active.volume=requested.volume;
         iq_block_t *block;
-        if (xQueueReceive(s_iq, &block, pdMS_TO_TICKS(20)) == pdTRUE) {
+        block=pending;pending=NULL;
+        if (block || xQueueReceive(s_iq, &block, pdMS_TO_TICKS(20)) == pdTRUE) {
+            /* A new source can enqueue its first block while this task waits
+             * with the previous configuration. Apply that generation on the
+             * next iteration before consuming this block. */
+            lock();bool next=block->generation!=s_active_generation&&block->generation==s_generation;unlock();
+            if(next){pending=block;continue;}
             int64_t now = esp_timer_get_time();
-            if (s_active.enabled && block->generation == s_active_generation && now >= s_settle_until) {
+            if(s_active.enabled && block->generation==s_active_generation && s_tune_pending){
+                /* Start settling after real IQ from the new tune arrives. */
+                s_tune_pending=false;s_settle_until=now+100000;
+            }
+            if (s_active.enabled && block->generation == s_active_generation && block->replay==s_replay_source && now >= s_settle_until) {
                 bool gap = s_have_sequence && block->sequence != s_last_sequence + 1;
                 s_have_sequence = true; s_last_sequence = block->sequence;
                 if (gap) {
+                    lock();if(s_phone)sdr_audio_gap(s_phone);unlock();
                     sdr_demod_init(s_demod, s_active.mode, pcm_received, NULL);
                     adsb_receiver_discontinuity(s_adsb); s_ook_count = s_ook_length = 0;
+                    s_ook_high=false;s_ook_floor=0.01f;s_ook_peak=0.05f;
                 }
                 int64_t started = now;
                 if (s_active.mode == SDR_ADSB) adsb_receiver_push_iq(s_adsb, block->iq, block->bytes);
@@ -291,19 +317,14 @@ static void worker(void *arg)
                     if (s_active.mode == SDR_OOK) ook_push(block->iq, block->bytes);
                 }
                 lock();
-                if (s_status.recording && s_status.config.mode == SDR_RECORD) {
-                    size_t room = SDR_RECORD_LIMIT - s_status.record_bytes;
-                    size_t count = block->bytes < room ? block->bytes : room;
-                    memcpy(s_record + s_status.record_bytes, block->iq, count); s_status.record_bytes += count;
-                    if (gap) ++s_status.record_drops;
-                    if (s_status.record_bytes == SDR_RECORD_LIMIT) {
-                        s_status.recording = false; s_status.record_ready = true;
-                        snprintf(s_status.record_status, sizeof(s_status.record_status), "Capture complete; download CU8 IQ");
-                    }
-                }
+                if(s_generation==s_active_generation && !block->replay && s_active.mode==SDR_RECORD)
+                    sdr_storage_push(block->iq,block->bytes,gap);
+                if(s_generation==s_active_generation && block->replay)s_replay_processed+=block->bytes;
                 uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
                 if (elapsed > s_status.dsp_max_us) s_status.dsp_max_us = elapsed;
-                s_status.streaming = true; s_status.active_frequency_hz = s_active_rf; ++s_status.iq_blocks;
+                if(s_generation==s_active_generation){s_status.streaming = true;s_status.active_frequency_hz = s_active_rf;}
+                ++s_status.iq_blocks;
+                s_status.processed_bytes += block->bytes;
                 unlock(); s_last_samples = now;
             }
             xQueueSend(s_free, &block, 0);
@@ -311,23 +332,29 @@ static void worker(void *arg)
         int64_t now = esp_timer_get_time();
         if (now - s_last_samples > 500000) {
             lock();s_status.streaming=false;
-            if(s_status.recording){s_status.recording=false;s_status.record_ready=s_status.record_bytes>0;++s_status.record_drops;
-                snprintf(s_status.record_status,sizeof(s_status.record_status),"RF stream timeout; partial capture");}
+            if(!s_replay_source&&sdr_storage_record_busy())sdr_storage_stop("RF stream timeout; finishing partial SD capture");
             unlock();
         }
-        if (s_active.enabled && s_active.mode == SDR_SCANNER && now >= s_scan_next) {
-            s_scan_hz += SDR_IQ_RATE / 2;
-            if (s_scan_hz >= s_active.scan_stop_hz) s_scan_hz = s_active.scan_start_hz;
+        if (!s_replay_source && s_active.enabled && s_active.mode == SDR_SCANNER && s_scan_frames>=4) {
             /* New generation on each hop discards pre-tune queued IQ. */
             lock();
             if (s_generation != s_active_generation) { unlock(); continue; }
+            if(++s_scan_index>=sdr_scan_steps(&s_active)){s_scan_index=0;++s_status.scan_sweeps;}
+            s_status.scan_step=s_scan_index+1;
+            s_scan_hz=sdr_scan_center(&s_active,s_scan_index);
             s_active_generation = ++s_generation; s_status.generation = s_generation; unlock();
-            request_tune(s_scan_hz); s_scan_next = now + 500000;
+            request_tune(s_scan_hz);
         }
         if (s_active.mode == SDR_ADSB && now - last_publish >= 500000) {
             publish_aircraft(); last_publish = now;
         }
-        vTaskDelay(1);
+        /* At 2 MS/s a 4096-byte block arrives every 1.024 ms. Sleeping on
+         * every block consumes that budget and eventually overflows the IQ
+         * queue. Empty queues already block; yield periodically for UI/idle. */
+        if (now - last_yield >= 20000) {
+            vTaskDelay(1);
+            last_yield = esp_timer_get_time();
+        }
     }
 }
 esp_err_t sdr_service_init(void)
@@ -338,6 +365,7 @@ esp_err_t sdr_service_init(void)
         .frequency_hz = 100000000, .converter_hz = 125000000, .volume = 35,
         .scan_start_hz = 88000000, .scan_stop_hz = 108000000};
     s_status.generation = s_generation;
+    s_status.view_generation=1;
     snprintf(s_status.usb_status, sizeof(s_status.usb_status), "USB host starting");
     /* USB client callbacks and DSP/audio consumers run in task context.
      * These copied payloads do not need the SRAM reserved for USB DMA. */
@@ -346,18 +374,20 @@ esp_err_t sdr_service_init(void)
     s_iq = xQueueCreateWithCaps(IQ_BLOCKS, sizeof(iq_block_t *), caps);
     s_decode = xQueueCreateWithCaps(32, sizeof(pcm_block_t), caps);
     s_monitor = xQueueCreateWithCaps(32, sizeof(pcm_block_t), caps);
+    s_phone = heap_caps_calloc(1,sizeof(*s_phone),caps);
     iq_block_t *pool = heap_caps_calloc(IQ_BLOCKS, sizeof(*pool), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_record = heap_caps_malloc(SDR_RECORD_LIMIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_scan_seen=heap_caps_calloc(SDR_FFT_BINS,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     s_demod = heap_caps_calloc(1, sizeof(*s_demod), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_free || !s_iq || !s_decode || !s_monitor || !pool || !s_record || !s_demod) {
+    if (!s_free || !s_iq || !s_decode || !s_monitor || !pool || !s_demod || !s_scan_seen || !s_phone) {
         ESP_LOGE(TAG, "SDR allocation failed: queues=%d/%d/%d/%d IQ=%d record=%d demod=%d internal=%u largest=%u",
                  s_free != NULL, s_iq != NULL, s_decode != NULL, s_monitor != NULL,
-                 pool != NULL, s_record != NULL, s_demod != NULL,
+                 pool != NULL, 0, s_demod != NULL,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         return ESP_ERR_NO_MEM;
     }
-    storage_init();
+    const sdr_replay_callbacks_t playback={replay_begin,replay_push,replay_drained,replay_end};
+    esp_err_t storage=sdr_storage_init(&playback);if(storage!=ESP_OK)return storage;
     for (unsigned n = 0; n < IQ_BLOCKS; ++n) { iq_block_t *block = pool + n; xQueueSend(s_free, &block, 0); }
     dsp_waterfall_config_t fft = {.fft_size = SDR_FFT_BINS, .fft_line_decimation = 28,
         .average_shift = 1, .db_min = -85, .db_max = -15};
@@ -372,32 +402,108 @@ esp_err_t sdr_service_init(void)
         ret = rtlsdr_start(&s_radio, &radio, iq_received, usb_status, NULL);
     }
     if (ret != ESP_OK) { usb_status("USB HOST START FAILED", NULL); ESP_LOGE(TAG, "USB host: %s", esp_err_to_name(ret)); }
-    /* Flash writes cannot use a P4 SPM stack with IDF 5.5's cache guard. */
-    if (xTaskCreatePinnedToCoreWithCaps(storage_worker, "sdr_store", 4096, NULL, 2, NULL, 1,
-                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA) != pdPASS) return ESP_ERR_NO_MEM;
     return xTaskCreatePinnedToCore(worker, "sdr_dsp", 12288, NULL, 7, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+/* Caller holds s_lock and has validated the configuration. */
+static bool configure_locked(const sdr_config_t *c, char *error, size_t size)
+{
+    if (c->enabled && s_status.tx_busy) {
+        if (error && size) snprintf(error, size, "Stop modem TX before enabling SDR");
+        return false;
+    }
+    const sdr_config_t *old=&s_status.config;
+    bool retune=s_replay_source || c->enabled!=old->enabled || c->decode!=old->decode || c->mode!=old->mode ||
+        c->frontend!=old->frontend || c->frequency_hz!=old->frequency_hz || c->converter_hz!=old->converter_hz ||
+        c->scan_start_hz!=old->scan_start_hz || c->scan_stop_hz!=old->scan_stop_hz;
+    if ((sdr_storage_record_busy() || s_replay_reserved) && retune) {
+        if (error && size) snprintf(error, size, "Stop SD capture/replay before retuning");
+        return false;
+    }
+    bool keep_scan=sdr_scan_same_range(old,c);
+    s_status.config = *c;
+    s_replay_source=false;
+    if(retune && !keep_scan)++s_status.view_generation;
+    if(retune){
+        s_status.generation = ++s_generation; s_status.streaming = false;
+        s_status.ook_frames=s_status.ook_pulses=0;s_status.pulses_text[0]=0;s_ook_last_frame=0;
+    }
+    return true;
 }
 bool sdr_service_configure(const sdr_config_t *c, char *error, size_t size)
 {
     if (!sdr_config_validate(c, error, size) || !s_lock) return false;
     lock();
-    if (c->enabled && s_status.tx_busy) {
-        if (error && size) snprintf(error, size, "Stop modem TX before enabling SDR");
-        unlock(); return false;
-    }
-    const sdr_config_t *old=&s_status.config;
-    bool retune=c->enabled!=old->enabled || c->decode!=old->decode || c->mode!=old->mode ||
-        c->frontend!=old->frontend || c->frequency_hz!=old->frequency_hz || c->converter_hz!=old->converter_hz ||
-        c->scan_start_hz!=old->scan_start_hz || c->scan_stop_hz!=old->scan_stop_hz;
-    if (s_status.recording && retune) {
-        if (error && size) snprintf(error, size, "Stop IQ recording before retuning");
-        unlock(); return false;
-    }
-    s_status.config = *c;
-    if(retune){s_status.generation = ++s_generation; s_status.streaming = false;}
-    unlock(); return true;
+    bool ok = configure_locked(c, error, size);
+    unlock();
+    return ok;
 }
-void sdr_service_get_status(sdr_status_t *out) { if (!out) return; if (!s_lock) { memset(out, 0, sizeof(*out)); return; } lock(); *out = s_status; unlock(); }
+sdr_modem_input_t sdr_service_modem_input(void)
+{
+    sdr_modem_input_t input = {0};
+    if (!s_lock) { input.busy = true; return input; }
+    lock();
+    input.rtl_sdr = s_status.config.enabled;
+    input.decode = s_status.config.enabled && s_status.config.decode;
+    input.replay = s_replay_source;
+    input.busy = s_status.tx_busy || s_replay_reserved || sdr_storage_record_busy();
+    unlock();
+    return input;
+}
+bool sdr_service_select_modem_input(bool rtl_sdr, char *error, size_t size)
+{
+    if (!s_lock) {
+        if (error && size) snprintf(error, size, "SDR service unavailable");
+        return false;
+    }
+    lock();
+    const char *reason = s_status.tx_busy ? "Return to Rx before changing input" :
+        (sdr_storage_record_busy() || s_replay_reserved) ? "Stop SD capture/replay before changing input" : NULL;
+    if (reason) {
+        if (error && size) snprintf(error, size, "%s", reason);
+        unlock(); return false;
+    }
+    /* Read and change only the source-related fields under one lock, so a
+     * concurrent tuning/volume request cannot be overwritten by a UI snapshot. */
+    sdr_config_t c = s_status.config;
+    c.enabled = c.decode = rtl_sdr;
+    if (rtl_sdr && c.mode != SDR_USB && c.mode != SDR_LSB) c.mode = SDR_USB;
+    bool ok = sdr_config_validate(&c, error, size) && configure_locked(&c, error, size);
+    unlock();
+    return ok;
+}
+void sdr_service_get_status(sdr_status_t *out)
+{
+    if (!out) return;
+    if (!s_lock) { memset(out, 0, sizeof(*out)); return; }
+    lock(); *out = s_status;
+    int64_t age=s_ook_last_frame?(esp_timer_get_time()-s_ook_last_frame)/1000:UINT32_MAX;
+    out->ook_age_ms=age>UINT32_MAX?UINT32_MAX:(uint32_t)age;
+    out->replay_source=s_replay_source;out->replaying=s_replay_reserved;out->replay_processed_bytes=s_replay_processed;
+    unlock();
+    sdr_storage_status(&out->sd);
+    out->recording=out->sd.state==SDR_SD_OPEN||out->sd.state==SDR_SD_RECORD;
+    out->record_saving=out->sd.state==SDR_SD_FINISH;out->record_saved=out->sd.saved;
+    out->store_available=out->sd.mounted;out->record_ready=out->sd.file_count>0&&out->sd.state==SDR_SD_IDLE;
+    out->record_bytes=out->sd.bytes;out->record_drops=out->sd.gaps;out->record_frequency_hz=out->sd.frequency_hz;
+    out->record_id=(uint32_t)strtoul(out->sd.file+2,NULL,10);
+    snprintf(out->record_status,sizeof(out->record_status),"%.63s",out->sd.message);
+}
+bool sdr_service_reconnect(char *error, size_t size)
+{
+    if (!s_lock) {
+        if (error && size) snprintf(error, size, "SDR service unavailable");
+        return false;
+    }
+    lock();
+    bool ok = !sdr_storage_record_busy() && !s_replay_reserved && !s_status.tx_busy && s_radio;
+    if (ok) {
+        ok = rtlsdr_reconnect(s_radio) == ESP_OK;
+        if (ok) { s_replay_source=false;s_status.streaming = false; s_status.generation = ++s_generation; ++s_status.view_generation; }
+    }
+    unlock();
+    if (!ok && error && size) snprintf(error, size, "Stop recording/TX before restarting USB");
+    return ok;
+}
 bool sdr_service_enabled(void) { if (!s_lock) return false; lock(); bool v = s_status.config.enabled; unlock(); return v; }
 bool sdr_service_decode_enabled(void) { if (!s_lock) return false; lock(); bool v = s_status.config.enabled && s_status.config.decode; unlock(); return v; }
 uint32_t sdr_service_generation(void) { if (!s_lock) return 0; lock(); uint32_t v = s_generation; unlock(); return v; }
@@ -409,8 +515,8 @@ bool sdr_service_claim_tx(char *error, size_t size)
         return false;
     }
     lock();
-    if (s_status.recording) {
-        if (error && size) snprintf(error, size, "Stop IQ recording in RF before TX/PTT");
+    if (sdr_storage_record_busy() || s_replay_reserved) {
+        if (error && size) snprintf(error, size, "Stop SD capture/replay before TX/PTT");
         unlock(); return false;
     }
     const bool switched = s_status.config.enabled;
@@ -420,9 +526,10 @@ bool sdr_service_claim_tx(char *error, size_t size)
     if (switched) {
         s_status.config.enabled = false;
         s_status.generation = ++s_generation;
+        ++s_status.view_generation;
         s_status.streaming = false;
     }
-    s_status.tx_busy = true;
+    s_replay_source=false;s_status.tx_busy = true;
     unlock();
     if (switched) ESP_LOGI(TAG, "TX/PTT switched input from RTL-SDR to line audio");
     return true;
@@ -445,35 +552,30 @@ bool sdr_service_play_audio(bool suppress)
     unlock();
     if (play) {
         for (unsigned n = 0; n < PCM_SAMPLES; ++n) block.samples[n] = (int32_t)block.samples[n] * volume / 100;
-        if (audio_output_write(block.samples, PCM_SAMPLES) != PCM_SAMPLES) { lock(); ++s_status.audio_drops; unlock(); }
+        size_t written = audio_output_write(block.samples, PCM_SAMPLES);
+        lock(); s_status.monitor_samples += written;
+        if (written != PCM_SAMPLES) ++s_status.audio_drops;
+        unlock();
     }
     return play;
 }
-bool sdr_service_record_start(char *error, size_t size)
+bool sdr_service_record_start(char *error,size_t size)
 {
-    if (!s_lock) return false;
+    if(!s_lock)return false;
     lock();
-    bool ok = s_status.config.enabled && s_status.streaming && s_status.config.mode == SDR_RECORD &&
-              !s_status.recording && !s_record_readers;
-    if (ok) {
-        ++s_record_id;
-        s_status.record_bytes = s_status.record_drops = 0; s_status.recording = true; s_status.record_ready = false;
-        s_record_config = s_status.config;
-        snprintf(s_status.record_status, sizeof(s_status.record_status), "Recording CU8 IQ into PSRAM (512 KiB max)");
-    } else if (error && size) snprintf(error, size, "Select IQ Record and wait for live USB samples");
-    unlock(); return ok;
+    bool ok=!s_replay_source&&!s_replay_reserved&&!s_status.tx_busy&&s_status.config.enabled&&
+        s_status.streaming&&s_status.config.mode==SDR_RECORD;
+    if(ok)ok=sdr_storage_record(&s_status.config,error,size);
+    else if(error&&size)snprintf(error,size,"Select live IQ capture and stop replay/TX first");
+    unlock();return ok;
 }
-void sdr_service_record_stop(void)
+void sdr_service_record_stop(void){sdr_storage_stop(NULL);}
+bool sdr_service_replay_start(const char *file,sdr_mode_t mode,char *error,size_t size)
 {
-    lock(); if (s_status.recording) { s_status.recording = false; s_status.record_ready = s_status.record_bytes > 0;
-        snprintf(s_status.record_status, sizeof(s_status.record_status), "Capture stopped; download available"); } unlock();
+    if(!s_lock)return false;
+    lock();bool ok=!s_status.tx_busy&&!s_replay_reserved&&!sdr_storage_record_busy();
+    if(ok){s_replay_reserved=true;ok=sdr_storage_replay(file,mode,error,size);if(!ok)s_replay_reserved=false;}
+    else if(error&&size)snprintf(error,size,"Stop SD capture/replay or modem TX first");
+    unlock();return ok;
 }
-const uint8_t *sdr_service_record_acquire(size_t *bytes, sdr_config_t *config, uint32_t *drops)
-{
-    lock(); const uint8_t *data = NULL;
-    if (s_status.record_ready && !s_status.recording) {
-        ++s_record_readers; data = s_record; *bytes = s_status.record_bytes; *config = s_record_config; *drops = s_status.record_drops;
-    }
-    unlock(); return data;
-}
-void sdr_service_record_release(void) { lock(); if (s_record_readers) --s_record_readers; unlock(); }
+void sdr_service_replay_stop(void){sdr_storage_stop(NULL);}

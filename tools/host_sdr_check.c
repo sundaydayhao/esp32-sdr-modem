@@ -1,4 +1,5 @@
 #include "sdr_demod.h"
+#include "sdr_audio_stream.h"
 #include "sdr_record.h"
 #include "adsb.h"
 #include "psk_tx.h"
@@ -133,6 +134,26 @@ static void check_config(void)
     c.mode=SDR_ADSB;assert(!sdr_config_validate(&c,error,sizeof(error)));c.frontend=SDR_TUNER;c.frequency_hz=1090000000;assert(sdr_config_validate(&c,error,sizeof(error)));
     c.decode=true;assert(!sdr_config_validate(&c,error,sizeof(error)));puts("PASS RF input/range and ADS-B/decode validation");
 }
+static void check_sd_record(void)
+{
+    sdr_record_info_t original={.config={.frontend=SDR_TUNER,.frequency_hz=106200000},
+        .bytes=17280000,.gaps=2,.crc32=0x12345678},decoded;
+    uint8_t header[SDR_SD_HEADER_BYTES];sdr_record_sd_encode(header,&original);
+    assert(sdr_record_sd_decode(header,&decoded));
+    assert(decoded.bytes==original.bytes&&decoded.gaps==2&&decoded.crc32==original.crc32);
+    assert(decoded.config.frequency_hz==106200000&&decoded.config.frontend==SDR_TUNER);
+    for(unsigned b=0;b<sizeof(header)*8;++b){header[b/8]^=1U<<(b%8);
+        assert(!sdr_record_sd_decode(header,&decoded));header[b/8]^=1U<<(b%8);}
+    const uint32_t invalid[]={0,1,17280001,SDR_SD_MAX_BYTES+2};
+    for(unsigned n=0;n<sizeof(invalid)/sizeof(invalid[0]);++n){original.bytes=invalid[n];
+        sdr_record_sd_encode(header,&original);assert(!sdr_record_sd_decode(header,&decoded));}
+    original.bytes=SDR_SD_MAX_BYTES;sdr_record_sd_encode(header,&original);assert(sdr_record_sd_decode(header,&decoded));
+    original.config.frequency_hz=1000;sdr_record_sd_encode(header,&original);assert(!sdr_record_sd_decode(header,&decoded));
+    assert(sdr_record_sd_name("IQ000001.IQ")&&sdr_record_sd_name("IQ999999.IQ"));
+    const char *bad[]={"../IQ000001.IQ","IQ000001.MET","IQ000001.TMP","IQ000001.IQ/","IQ00001.IQ","IQ00000x.IQ","iq000001.iq","",NULL};
+    for(unsigned n=0;n<sizeof(bad)/sizeof(bad[0]);++n)assert(!sdr_record_sd_name(bad[n]));
+    puts("PASS SD metadata: long files, every-bit corruption, bounds, RF validation, safe filenames");
+}
 static void check_record(void)
 {
     sdr_config_t c={.mode=SDR_RECORD,.frontend=SDR_DIRECT_Q,.frequency_hz=7074000,.converter_hz=125000000,.volume=35},out;
@@ -146,6 +167,26 @@ static void check_record(void)
 }
 #include "sdr_map.h"
 #include "sdr_presets.h"
+#include "sdr_scan.h"
+static void check_scan(void)
+{
+    /* Complete measured coverage, including narrow/unaligned final windows. */
+    const uint32_t spans[]={1,1000,72000,144000,144001,1000000,20000000};
+    for(unsigned k=0;k<sizeof(spans)/sizeof(spans[0]);++k){
+        sdr_config_t c={.mode=SDR_SCANNER,.scan_start_hz=88000000,.scan_stop_hz=88000000+spans[k]};
+        uint8_t fft[512],peaks[512]={0},seen[512]={0},level=0;uint32_t hz=0;
+        memset(fft,100,sizeof(fft));fft[256]=220;
+        for(unsigned n=0;n<sdr_scan_steps(&c);++n){
+            uint32_t center=sdr_scan_center(&c,n);assert(center>=c.scan_start_hz&&center<c.scan_stop_hz);
+            sdr_scan_accumulate(&c,center,fft,peaks,seen,&hz,&level);
+        }
+        for(unsigned n=0;n<512;++n){assert(seen[n]);assert(peaks[n]>=100);}
+        assert(hz>=c.scan_start_hz&&hz<c.scan_stop_hz);
+        sdr_config_t paused=c;paused.enabled=!c.enabled;assert(sdr_scan_same_range(&c,&paused));
+        ++paused.scan_stop_hz;assert(!sdr_scan_same_range(&c,&paused));
+    }
+    puts("PASS scanner: complete coverage, cropped edge bins, narrow/unaligned ranges and pause compatibility");
+}
 static void check_map(void)
 {
     sdr_map_view_t v={35,105,20};int x,y;
@@ -160,7 +201,17 @@ static void check_map(void)
     assert(sdr_map_project(&v,400,240,11,-179,&x,&y));
     assert(adsb_aircraft_position_fresh(a,16000));assert(!adsb_aircraft_position_fresh(a,16001));
     assert(!adsb_aircraft_position_fresh(a,999));assert(!adsb_aircraft_position_fresh(a+2,1000));
-    sdr_map_zoom(&v,.00001);assert(v.span==.25);sdr_map_zoom(&v,1e9);assert(v.span==360);
+    sdr_map_zoom(&v,.00001);assert(v.span==.01);sdr_map_zoom(&v,1e9);assert(v.span==360);
+    v=(sdr_map_view_t){22.60,114.05,.075};
+    assert(sdr_map_has_detail(&v));
+    assert(sdr_map_meters_per_pixel(&v,400)>10&&sdr_map_meters_per_pixel(&v,400)<25);
+    size_t place_count=0;const sdr_map_place_t *places=sdr_map_places(&place_count);
+    assert(places&&place_count>100);
+    double distance=0;
+    const sdr_map_place_t *nearest=sdr_map_nearest(places[0].latitude,places[0].longitude,&distance);
+    assert(nearest&&distance<.001);
+    v=(sdr_map_view_t){39.9,116.4,.075};assert(!sdr_map_has_detail(&v));
+    assert(!sdr_map_nearest(39.9,116.4,&distance));
     uint16_t *buf=malloc((400*240+2)*sizeof(*buf));assert(buf);buf[0]=0x1234;buf[400*240+1]=0x5678;
     for(int n=0;n<30;n++){v=(sdr_map_view_t){-85+n*6,170-n*14,n%2?.25:360};
         sdr_map_draw(buf+1,400,240,&v);sdr_map_marker(buf+1,400,240,0,0,90,false);
@@ -168,7 +219,33 @@ static void check_map(void)
     free(buf);
     sdr_config_t c={.enabled=true,.decode=true,.monitor=true,.converter_hz=125000000,.volume=35};char error[128];
     assert(sdr_cn_preset_count==5);
-    for(unsigned n=0;n<sdr_cn_preset_count;n++){assert(sdr_preset_apply(n,&c));assert(sdr_config_validate(&c,error,sizeof(error)));assert(!c.decode&&!c.monitor&&c.frontend==SDR_TUNER);assert(c.frequency_hz>=c.scan_start_hz&&c.frequency_hz<=c.scan_stop_hz);}
+    for(unsigned n=0;n<sdr_cn_preset_count;n++){c.enabled=false;assert(sdr_preset_apply(n,&c));assert(sdr_config_validate(&c,error,sizeof(error)));assert(c.enabled&&!c.decode&&!c.monitor&&c.frontend==SDR_TUNER);assert(c.frequency_hz>=c.scan_start_hz&&c.frequency_hz<=c.scan_stop_hz);}
     assert(!sdr_preset_apply(5,&c));puts("PASS map: coordinates, dateline, stale positions, zoom/clipping guards; five CN presets");
 }
-int main(void){check_config();check_record();check_map();check_demod();check_adsb();check_modem(SDR_USB);check_modem(SDR_LSB);puts("PASS SDR host checks");return 0;}
+static void check_phone_audio(void)
+{
+    sdr_audio_stream_t s={0};sdr_audio_frame_t f;uint8_t wire[SDR_AUDIO_PACKET];
+    feed_tone(SDR_WFM,1);sdr_audio_sync(&s,17,106200000,true);size_t consumed=0;
+    for(size_t n=0;n+128<=audio_count;n+=128){
+        sdr_audio_push(&s,audio+n,128,(uint32_t)(n/48));
+        if(!sdr_audio_take(&s,&f,(uint32_t)(n/48)))continue;
+        assert(f.count==512&&f.generation==17&&f.frequency_hz==106200000);
+        assert(!memcmp(f.samples,audio+consumed,1024));consumed+=512;
+        assert(sdr_audio_encode(&f,s.drops,0x12345678,wire,sizeof(wire))==1056);
+        assert(!memcmp(wire,"WFM1",4)&&wire[4]==17&&wire[20]==0&&wire[21]==2&&wire[22]==1);
+        assert(wire[28]==0x78&&wire[31]==0x12);
+        for(unsigned k=0;k<512;k++)assert((uint16_t)f.samples[k]==(uint16_t)(wire[32+k*2]|wire[33+k*2]<<8));
+    }
+    assert(consumed==47616&&s.drops==0);
+    sdr_audio_sync(&s,18,89800000,true);assert(!sdr_audio_take(&s,&f,1000));
+    assert(f.count==0&&f.generation==18&&f.frequency_hz==89800000);
+    assert(sdr_audio_encode(&f,0,1,wire,sizeof(wire))==32&&wire[22]==0);
+    sdr_audio_push(&s,audio,512*10,1000);assert(s.used==8&&s.drops==2);
+    assert(sdr_audio_take(&s,&f,1000));assert(!memcmp(f.samples,audio+1024,1024));
+    assert(!sdr_audio_take(&s,&f,1121)&&s.drops==9);
+    sdr_audio_push(&s,audio,512,2000);sdr_audio_sync(&s,19,89800000,false);
+    sdr_audio_push(&s,audio,512,2000);assert(!sdr_audio_take(&s,&f,2000));
+    f.count=513;assert(!sdr_audio_encode(&f,0,1,wire,sizeof(wire)));
+    puts("PASS WFM phone audio: production demod PCM exact wire round trip, generation/mute reset, bounded oldest-drop and stale expiry");
+}
+int main(void){check_config();check_sd_record();check_record();check_map();check_scan();check_demod();check_phone_audio();check_adsb();check_modem(SDR_USB);check_modem(SDR_LSB);puts("PASS SDR host checks");return 0;}

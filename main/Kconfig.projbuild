@@ -15,9 +15,9 @@ menu "RTL-SDR USB receiver"
     config RTLSDR_NUM_TRANSFERS
         int "Concurrent USB bulk transfers"
         range 4 16
-        default 8
+        default 4
     config RTLSDR_BULK_TRANSFER_SIZE
         int "Bulk transfer bytes (multiple of 512)"
         range 4096 8192
-        default 8192
+        default 4096
 endmenu

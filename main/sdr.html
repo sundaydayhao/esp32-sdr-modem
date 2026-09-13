@@ -7,7 +7,18 @@
 <link rel="stylesheet" href="/theme.css">
 <header><div><h1>SDR STUDIO</h1><span class="muted">ESP32-P4 接收与数字通信</span></div><nav aria-label="工作空间"><a href="/sdr" aria-current="page">接收台</a><a href="/modem">Modem / Codec2</a></nav></header>
 <div class="workspaces"><button id="radioTab" type="button">广播 / 短波</button><button id="adsbTab" type="button">ADS-B 飞机</button><button id="subTab" type="button">Sub-GHz 频段</button><button id="captureTab" type="button">IQ 录制 / 扫描</button></div>
-<section id="presetPanel" class="panel" hidden><div class="controls"><label>中国大陆接收预设<select id="bandPreset" disabled><option>正在读取频段目录</option></select></label><pre id="bandInfo"></pre></div><p class="muted">接收参考频率，具体用途与技术条件见工信部 2019 年第 52 号公告。支持原始 OOK 脉冲、频谱和 IQ 分析；尚未解码 LoRa、FSK 或特定传感器协议。</p></section>
+<section id="presetPanel" class="panel" hidden><div class="controls"><label>中国大陆接收预设<select id="bandPreset" disabled><option>正在读取频段目录</option></select></label><label>分析方式<select id="subAnalysis"><option value="8">OOK 原始脉冲</option><option value="5">实时频谱</option><option value="4">NFM 音频</option><option value="9">IQ 采集</option><option value="7">扫描此频段</option></select></label><button id="subCapture" type="button">转到 IQ 采集</button><button id="subScan" type="button">扫描此频段</button></div><p id="subStatus" role="status">等待 RTL-SDR 状态</p><details><summary>频段用途与分析范围</summary><pre id="bandInfo"></pre><p class="muted">中国大陆接收参考频率，具体用途与技术条件见工信部 2019 年第 52 号公告。支持原始 OOK 脉冲、频谱和 IQ 分析；尚未解码 LoRa、FSK 或特定传感器协议。</p></details></section>
+<section id="capturePanel" class="panel" hidden>
+<h3>IQ 采集 / 扫描 / SD 重放</h3>
+<div class="controls"><label>工作方式<select id="captureKind"><option value="9">采集到 SD 卡</option><option value="7">频段扫描</option><option value="-1">SD 文件重放</option></select></label>
+<label>扫描起点 MHz<input id="captureStart" type="number" min="24" max="1766" step="0.001"></label>
+<label>扫描终点 MHz<input id="captureStop" type="number" min="24" max="1766" step="0.001"></label>
+<button id="scanPause" type="button">暂停扫描</button><button id="scanPeak" type="button">查看最强频点 IQ</button></div>
+<p id="captureSummary" role="status">先应用设置连接接收棒，再开始采集或扫描。</p>
+<progress id="captureProgress" max="100" value="0" style="width:100%"></progress>
+<div class="controls"><label>SD IQ 文件<select id="sdFiles"><option>暂无 SD 文件</option></select></label><label>重放解调<select id="sdMode"><option value="5">频谱</option><option value="3">WFM 音频</option><option value="4">NFM 音频</option><option value="2">AM 音频</option><option value="0">USB 音频</option><option value="1">LSB 音频</option><option value="8">OOK 脉冲</option></select></label><button id="sdRefresh" type="button">刷新 SD 卡</button><button id="sdPlay" type="button">从 SD 重放</button><button id="sdStop" type="button">停止重放</button></div>
+<p id="sdSummary" role="status">等待 SD 卡状态</p>
+<p class="muted">扫描保留全频段峰值，可暂停查看。IQ 保存原始 CU8，288 kS/s，连续写入 SD 卡，按停止完成文件，单文件小于 2 GiB。选择 SD 文件可重放频谱和解调音频。</p></section>
 <section class="panel receiver-controls"><div id="live">正在连接设备状态…</div>
 <form id="form"><fieldset id="fields"><div class="controls">
 <label>接收应用<select id="mode"><option>USB</option><option>LSB</option><option>AM</option><option>WFM</option><option>NFM</option><option>Waterfall</option><option>ADS-B</option><option>Scanner</option><option>OOK pulses</option><option>IQ Record</option></select></label>
@@ -19,21 +30,102 @@
 <div class="controls"><label>射频输入<select id="frontend"><option>Tuner</option><option>Direct Q</option><option>Blog V4</option><option>Upconverter</option></select></label><label>上变频器本振 MHz<input id="converter" type="number" min="24" max="250" step="0.000001" required></label><label class="check"><input id="decode" type="checkbox">直接送入数字解码器</label><label class="check"><input id="monitor" type="checkbox">扬声器监听</label><label>音量<input id="volume" type="range" min="0" max="100" value="35"></label></div>
 <div class="controls" style="margin-top:16px"><label>扫描起点 MHz<input id="scanStart" type="number" min="0.5" max="1766" step="0.001" required></label><label>扫描终点 MHz<input id="scanStop" type="number" min="0.5" max="1766" step="0.001" required></label></div></details></fieldset></form><p id="message" role="status"></p></section>
 <section id="aircraftPanel" class="panel" hidden><h2>ADS-B 飞机</h2><p id="aircraftSummary" role="status">等待飞机报文</p><div class="aircraft-grid"><div><canvas id="aircraftMap" width="800" height="400" aria-label="离线飞机位置地图"></canvas><div class="map-actions"><button id="mapFit" type="button">显示全部飞机</button><div><button id="mapIn" type="button" aria-label="放大地图">＋</button> <button id="mapOut" type="button" aria-label="缩小地图">－</button></div></div><p id="mapCaption" class="muted"></p></div><div><h3>接收到的飞机</h3><div id="aircraftRows"></div><p id="mapDetail"></p></div></div></section>
-<div id="radioData" class="grid"><section class="panel"><canvas id="spectrum" width="768" height="90"></canvas><canvas id="waterfall" width="768" height="290"></canvas><div id="axis"><span></span><span></span><span></span></div><p class="muted">一个接收棒一次运行一个射频应用。扫描显示分段峰值；USB / LSB 的音频可在设备内直接送入所选数字模式。</p></section>
-<section class="panel"><h3 id="detailsTitle">接收内容</h3><canvas id="audio" width="360" height="90" hidden></canvas><pre id="details">等待接收棒…</pre><div class="controls"><button id="recordStart" type="button">开始 IQ 录制</button><button id="recordStop" type="button">停止</button></div><p><a href="/api/sdr/record">下载 IQ 数据</a> · <a href="/api/sdr/record-meta">下载 SigMF 元数据</a></p><p class="muted">单次最多 512 KiB，先缓冲到 PSRAM，结束后自动保存到板载 Flash；关机前请等待保存完成。两个下载文件放在同一目录即可使用 SigMF 工具读取。存在断样时会明确标记。</p></section></div>
+<div id="radioData" class="grid"><section class="panel"><div class="signal-key"><span>瀑布图 · 自动对比</span><span>弱</span><i aria-hidden="true"></i><span>强</span></div><canvas id="spectrum" width="768" height="90"></canvas><canvas id="waterfall" width="768" height="290" aria-label="信号强度瀑布图：深色弱、青色中等、黄橙色强、白色最强"></canvas><div id="axis"><span></span><span></span><span></span></div><p class="muted">颜色表示相对强弱，自动跟随噪声底；不是校准后的 dBm。一个接收棒一次运行一个射频应用。扫描显示分段峰值；USB / LSB 的音频可在设备内直接送入所选数字模式。</p></section>
+<section class="panel"><h3 id="detailsTitle">接收内容</h3><canvas id="audio" width="360" height="90" hidden></canvas><pre id="details">等待接收棒…</pre><div class="controls"><button id="recordStart" type="button">开始 IQ 录制</button><button id="recordStop" type="button">停止</button></div><p><a id="iqDataLink" href="/api/sdr/record">下载 IQ 数据</a> · <a id="iqMetaLink" href="/api/sdr/record-meta">下载 SigMF 元数据</a></p><p class="muted">原始 CU8 连续保存到 SD 卡的 IQ 目录，按停止后完成文件校验信息。每次录制创建新文件；重放从 SD 读取，先验证 CRC，再按原采样率送入频谱/音频。下载得到标准 SigMF 数据和元数据。SD 卡上的 .IQ 原始数据需与同名 .MET 信息文件一起保留。</p></section></div>
 <section class="panel metrics" id="metrics"></section>
 <script src="/dashboard.js"></script>
 <script>
 const el=id=>document.getElementById(id), names=['USB','LSB','AM','WFM','NFM','Waterfall','ADS-B','Scanner','OOK pulses','IQ Record'];
 let config=null,dirty=false,seq=-1,generation=-1,rxAfter=0,rxBoot='',boardBoot='',decoded='',busy=false;
+let replayPanelSelected=false,sdCatalog=-1;
 const spec=el('spectrum'),water=el('waterfall'),sc=spec.getContext('2d'),wc=water.getContext('2d');
-function fill(c){el('mode').selectedIndex=c.mode;el('frontend').selectedIndex=c.frontend;el('frequency').value=(c.frequency_hz/1e6).toFixed(6);el('converter').value=(c.converter_hz/1e6).toFixed(6);el('scanStart').value=(c.scan_start_hz/1e6).toFixed(6);el('scanStop').value=(c.scan_stop_hz/1e6).toFixed(6);for(const k of ['enabled','decode','monitor'])el(k).checked=c[k];el('volume').value=c.volume;}
+function fill(c){el('mode').selectedIndex=c.mode;el('frontend').selectedIndex=c.frontend;el('frequency').value=(c.frequency_hz/1e6).toFixed(6);el('converter').value=(c.converter_hz/1e6).toFixed(6);el('scanStart').value=(c.scan_start_hz/1e6).toFixed(6);el('scanStop').value=(c.scan_stop_hz/1e6).toFixed(6);for(const k of ['enabled','decode','monitor'])el(k).checked=c[k];el('volume').value=c.volume;el('captureKind').value=String(replayPanelSelected?-1:c.mode===7?7:9);el('captureStart').value=el('scanStart').value;el('captureStop').value=el('scanStop').value;}
 el('form').addEventListener('input',()=>dirty=true);
-el('mode').addEventListener('change',()=>{const m=el('mode').selectedIndex;el('decode').checked=m===0||m===1;if(m===6){el('frequency').value='1090';el('frontend').selectedIndex=0;}if(m===3)el('frequency').value='100';if(m===8)el('frequency').value='433.92';dashboard.modeChanged(m);});
+el('mode').addEventListener('change',()=>{replayPanelSelected=false;const m=el('mode').selectedIndex;el('decode').checked=m===0||m===1;if(m===6){el('frequency').value='1090';el('frontend').selectedIndex=0;}if(m===3)el('frequency').value='100';if(m>=2&&m<=4){el('enabled').checked=true;el('monitor').checked=true;}if(m===8)el('frequency').value='433.92';if(m===7||m===9){el('enabled').checked=true;el('monitor').checked=false;el('captureKind').value=String(m);}dashboard.modeChanged(m);});
 async function post(url,data){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw Error(await r.text());return r.json();}
-el('form').addEventListener('submit',async e=>{e.preventDefault();if(!config||busy)return;busy=true;el('fields').disabled=true;try{const c={...config,mode:el('mode').selectedIndex,frontend:el('frontend').selectedIndex,frequency_hz:Math.round(Number(el('frequency').value)*1e6),converter_hz:Math.round(Number(el('converter').value)*1e6),scan_start_hz:Math.round(Number(el('scanStart').value)*1e6),scan_stop_hz:Math.round(Number(el('scanStop').value)*1e6),volume:Number(el('volume').value)};for(const k of ['enabled','decode','monitor'])c[k]=el(k).checked;const result=await post('/api/sdr',c);dirty=false;config=result.config;fill(config);el('message').textContent='设置已提交，等待接收棒调谐。';}catch(e){el('message').textContent=e.message;}finally{busy=false;el('fields').disabled=false;}});
+el('form').addEventListener('submit',async e=>{e.preventDefault();if(!config||busy)return;busy=true;el('fields').disabled=true;try{const c={...config,mode:el('mode').selectedIndex,frontend:el('frontend').selectedIndex,frequency_hz:Math.round(Number(el('frequency').value)*1e6),converter_hz:Math.round(Number(el('converter').value)*1e6),scan_start_hz:Math.round(Number(el('scanStart').value)*1e6),scan_stop_hz:Math.round(Number(el('scanStop').value)*1e6),volume:Number(el('volume').value)};for(const k of ['enabled','decode','monitor'])c[k]=el(k).checked;if(c.mode===7||c.mode===9){c.enabled=true;c.decode=c.monitor=false;}if(dashboard.isSubGHz()){c.enabled=true;c.decode=false;c.monitor=c.mode===4;}const result=await post('/api/sdr',c);replayPanelSelected=false;dirty=false;config=result.config;fill(config);el('message').textContent='设置已提交，等待接收棒调谐。';}catch(e){el('message').textContent=e.message;}finally{busy=false;el('fields').disabled=false;}});
 for(const action of ['start','stop'])el(action==='start'?'recordStart':'recordStop').onclick=async()=>{try{await post('/api/sdr/record',{action});el('message').textContent=action==='start'?'录制已开始':'录制已停止';}catch(e){el('message').textContent=e.message;}};
-function paint(s){if(!s.streaming||s.sequence===seq)return;seq=s.sequence;const bins=s.config.mode===7?s.scan:s.fft;sc.fillStyle='#030911';sc.fillRect(0,0,768,90);sc.strokeStyle='#62cbff';sc.beginPath();for(let x=0;x<768;x++){const v=bins[Math.floor(x*512/768)],yy=88-v*86/255;if(x)sc.lineTo(x,yy);else sc.moveTo(x,yy);}sc.stroke();wc.drawImage(water,0,0,768,289,0,1,768,289);const line=wc.createImageData(768,1);for(let x=0;x<768;x++){const v=bins[Math.floor(x*512/768)],i=x*4;line.data[i]=Math.max(0,(v-128)*2);line.data[i+1]=v<128?v*2:255-(v-128);line.data[i+2]=v<100?v*2:255-v;line.data[i+3]=255;}wc.putImageData(line,0,0);}
-async function poll(){try{const r=await fetch('/api/sdr',{cache:'no-store'});if(!r.ok)throw Error('状态读取失败');const s=await r.json();if(s.boot_id!==boardBoot){boardBoot=s.boot_id;rxAfter=0;rxBoot='';decoded='';generation=-1;}config=s.config;await dashboard.update(s,dirty||busy);const wave=el('audio');wave.hidden=config.mode<2||config.mode>4;if(!wave.hidden){const ctx=wave.getContext('2d');ctx.clearRect(0,0,360,90);ctx.strokeStyle='#75ddff';ctx.beginPath();s.waveform.forEach((v,i)=>{const xx=i*360/63,yy=45-v*40/32768;if(i)ctx.lineTo(xx,yy);else ctx.moveTo(xx,yy);});ctx.stroke();}if(!dirty&&!busy)fill(config);if(generation!==s.generation){generation=s.generation;seq=-1;wc.clearRect(0,0,768,290);sc.clearRect(0,0,768,90);}el('live').textContent=(s.streaming?'● 正在接收':'○ 暂无射频数据')+' · '+s.usb_status;paint(s);const center=s.active_frequency_hz,span=s.sample_rate_hz,axis=el('axis').children;const a=config.mode===7?[config.scan_start_hz,(config.scan_start_hz+config.scan_stop_hz)/2,config.scan_stop_hz]:[center-span/2,center,center+span/2];a.forEach((v,i)=>axis[i].textContent=(v/1e6).toFixed(6)+' MHz');el('detailsTitle').textContent=names[config.mode]+' 接收内容';let detail='';if(config.mode===6)detail=s.adsb_messages+' 条校验有效报文\n'+s.aircraft;else if(config.mode===8)detail=s.ook_frames+' 个原始脉冲帧\n'+s.pulses+'\n仅脉冲分析，未识别具体传感器协议。';else if(config.mode===9)detail=s.record_status+'\n'+s.record_bytes+' / 524288 bytes\n断样次数：'+s.record_gaps;else if(config.decode&&s.modem_content===2)detail='Codec2 700C / '+s.modem_mode+'\n已解码帧：'+s.voice_decoded+'\nCRC 错包：'+s.voice_crc_errors;else if(config.decode&&s.modem_content===1)detail='接收图像：'+s.image_rows+' / 96 行\n打开数字模式页查看图像。';else if(config.decode){const rr=await fetch('/api/rx?cursor='+rxAfter);if(rr.ok){const epoch=rr.headers.get('X-Content-Epoch')||'';if(epoch!==rxBoot){rxBoot=epoch;decoded='';}const bytes=await rr.arrayBuffer();decoded=(decoded+new TextDecoder().decode(bytes)).slice(-4000);rxAfter=rr.headers.get('X-Next-Cursor')||rxAfter;}detail=decoded||'等待所选数字模式的内容。模式、音频中心和 Codec2 设置位于“数字模式”页。';}else detail='监听 '+names[config.mode]+' · '+(center/1e6).toFixed(6)+' MHz\n\n数字通信请选择 USB / LSB 并启用直接解码。原有 PSK、图像和 Codec2 控制仍在数字模式页面。';el('details').textContent=detail;el('metrics').textContent='IQ 块 '+s.iq_blocks+'　丢 IQ '+s.iq_drops+'　丢解码 PCM '+s.pcm_drops+'　丢播放 PCM '+s.audio_drops+'　DSP 最大 '+s.dsp_max_us+' μs　'+(s.sample_rate_hz/1e6).toFixed(3)+' MS/s';}catch(e){dashboard.disconnected();el('live').textContent='设备连接中断 · '+e.message;}finally{setTimeout(poll,350);}}
+el('captureKind').addEventListener('change',()=>{replayPanelSelected=el('captureKind').value==='-1';if(replayPanelSelected){dashboard.showCapture();dirty=false;return;}el('mode').selectedIndex=Number(el('captureKind').value);el('mode').dispatchEvent(new Event('change'));dirty=true;});
+for(const [a,b] of [['captureStart','scanStart'],['captureStop','scanStop']]){
+  el(a).addEventListener('input',()=>{el(b).value=el(a).value;dirty=true;});
+  el(b).addEventListener('input',()=>{el(a).value=el(b).value;dirty=true;});
+}
+let latestStatus=null;
+for(const id of ['iqDataLink','iqMetaLink'])el(id).addEventListener('click',e=>{if(!latestStatus?.record_ready)e.preventDefault();});
+async function scanAction(peak){
+  if(!config||dirty||busy||config.mode!==7)return;
+  const c={...config};if(peak){if(!latestStatus?.scan_peak_hz)return;c.mode=9;c.frequency_hz=latestStatus.scan_peak_hz;c.enabled=true;c.decode=c.monitor=false;}else c.enabled=!c.enabled;
+  busy=true;try{const result=await post('/api/sdr',c);config=result.config;fill(config);dashboard.modeChanged(config.mode);}catch(e){el('message').textContent=e.message;}finally{busy=false;}
+}
+el('scanPause').onclick=()=>scanAction(false);el('scanPeak').onclick=()=>scanAction(true);
+function ookDetails(s){
+  const header=(s.replay_source?'SD REPLAY / ':'RTL-SDR / ')+(s.active_frequency_hz/1e6).toFixed(6)+' MHz\n';
+  if(!s.config.enabled||!s.streaming)return header+'等待实际 USB IQ，当前没有实时脉冲。';
+  if(!s.ook_frames)return header+'IQ 正在接收，等待 OOK 脉冲。\n尚未识别具体遥控器或传感器协议。';
+  return header+s.ook_frames+' 组原始脉冲 / '+s.ook_pulses+' 个边沿\n距上次 '+(s.ook_age_ms/1000).toFixed(1)+' 秒\n'+
+    (s.ook_age_ms<=5000?s.pulses:'等待新脉冲，已隐藏过期波形。')+'\n仅原始脉冲分析，未识别具体设备协议。';
+}
+async function sdAction(action){
+  if(busy)return;busy=true;
+  try{const request={action};if(action==='play'){request.file=el('sdFiles').value;request.mode=Number(el('sdMode').value);}
+    await post('/api/sdr/sd',request);if(action==='play'){replayPanelSelected=true;dirty=false;dashboard.showCapture();}
+    el('message').textContent='SD 操作已提交';
+  }catch(e){el('message').textContent=e.message;}finally{busy=false;}
+}
+el('sdRefresh').onclick=()=>sdAction('refresh');el('sdPlay').onclick=()=>sdAction('play');el('sdStop').onclick=()=>sdAction('stop');
+el('sdFiles').addEventListener('change',()=>{if(latestStatus)updateSD(latestStatus);});
+function updateSD(s){
+  const files=s.sd_files||[],idle=s.sd_state===0;
+  if(sdCatalog!==s.sd_catalog_generation){const before=el('sdFiles').value;el('sdFiles').replaceChildren();
+    for(const f of files){const o=document.createElement('option');o.value=f.name;o.textContent=f.name+' · '+(f.frequency_hz/1e6).toFixed(3)+' MHz · '+(f.bytes/576000).toFixed(1)+' 秒';el('sdFiles').append(o);}
+    el('sdFiles').value=files.some(f=>f.name===before)?before:files[0]?.name||'';sdCatalog=s.sd_catalog_generation;
+  }
+  el('sdRefresh').disabled=!idle||busy;el('sdPlay').disabled=!idle||!s.sd_mounted||!files.length||busy;
+  el('sdStop').disabled=!s.replaying;el('sdFiles').disabled=el('sdMode').disabled=!idle;
+  el('sdSummary').textContent=(s.sd_message||'等待 SD 卡')+' · '+(s.sd_file||'')+' · '+(s.sd_free_mb||0)+' MiB 可用'+
+    (s.replaying||s.replay_source?' · '+((s.replay_bytes||0)/576000).toFixed(2)+' / '+((s.replay_total||0)/576000).toFixed(2)+' 秒':'');
+  for(const [id,route] of [['iqDataLink','record'],['iqMetaLink','record-meta']]){
+    el(id).href='/api/sdr/'+route+'?file='+encodeURIComponent(el('sdFiles').value);
+    el(id).setAttribute('aria-disabled',String(!idle||!files.length));
+  }
+}
+function captureStatus(s){
+  latestStatus=s;updateSD(s);const scan=s.config.mode===7,iq=s.config.mode===9;
+  el('scanPause').hidden=el('scanPeak').hidden=!scan;
+  el('scanPause').disabled=dirty||busy;el('scanPeak').disabled=dirty||busy||!s.scan_peak_hz;
+  el('scanPause').textContent=s.config.enabled?'暂停扫描':'继续扫描';
+  el('recordStart').disabled=!iq||!s.streaming||s.replay_source||!s.sd_mounted||s.sd_state!==0||dirty||busy;
+  el('recordStop').disabled=!s.recording;
+  for(const id of ['iqDataLink','iqMetaLink']){el(id).setAttribute('aria-disabled',String(!s.record_ready));el(id).style.opacity=s.record_ready?'1':'.4';}
+  el('captureProgress').hidden=!scan&&!replayPanelSelected;el('captureProgress').value=replayPanelSelected?(s.replay_total?s.replay_bytes*100/s.replay_total:0):(s.scan_coverage||0);
+  const store=s.record_saved?'已保存到 SD 卡':s.record_saving?'正在完成 SD 文件':s.sd_mounted?'SD 卡可用':'未挂载 SD 卡';
+  el('captureSummary').textContent=replayPanelSelected?'SD 文件重放 · 选择文件及解调方式，再点击从 SD 重放。':scan?`${s.config.enabled?(s.streaming?'测量中':'调谐 / 等待 IQ'):'已暂停'} · ${(s.active_frequency_hz/1e6).toFixed(3)} MHz · 步骤 ${s.scan_step||0}/${s.scan_steps||0} · 完成 ${s.scan_sweeps||0} 轮 · 覆盖 ${s.scan_coverage||0}% · 最强 ${((s.scan_peak_hz||0)/1e6).toFixed(3)} MHz`:
+    iq?`${s.record_status||'应用设置连接接收棒，再点击开始 IQ 录制'} · 采集频率 ${((s.record_frequency_hz||0)/1e6).toFixed(3)} MHz · ${s.record_bytes||0} bytes · ${((s.record_bytes||0)/576000).toFixed(3)} 秒 · ${store}`:'先应用设置，将 RTL-SDR 切换到 IQ 采集或扫描。';
+}
+// Match ui_theme.c: the color window affects only the waterfall display.
+const signalColors=[[2,5,14],[8,15,48],[14,38,104],[16,90,178],[0,175,215],[110,215,130],[250,225,65],[255,130,30],[255,250,235]];
+let signalFloorQ8=-1,signalGeneration=-1;
+function signalColor(level){const p=level*8,part=Math.min(7,Math.floor(p/255)),step=p-part*255;return signalColors[part].map((v,i)=>v+Math.trunc((signalColors[part+1][i]-v)*step/255));}
+function signalFloor(bins){
+  const histogram=new Uint16Array(256);for(const v of bins)histogram[v]++;
+  let floor=0,total=0;for(;floor<255;floor++){total+=histogram[floor];if(total>=Math.ceil(bins.length/5))break;}
+  const target=Math.max(0,floor-6)*256;
+  signalFloorQ8=signalFloorQ8<0?target:signalFloorQ8+Math.trunc((target-signalFloorQ8)/16);
+  return Math.floor(signalFloorQ8/256);
+}
+function paint(s){
+  if(!s.streaming||s.sequence===seq)return;
+  if(signalGeneration!==(s.view_generation??s.generation)||seq===-1){signalGeneration=s.view_generation??s.generation;signalFloorQ8=-1;}
+  seq=s.sequence;const bins=s.config.mode===7?s.scan:s.fft,floor=signalFloor(bins);
+  sc.fillStyle='#030911';sc.fillRect(0,0,768,90);sc.strokeStyle='#62cbff';sc.beginPath();
+  for(let x=0;x<768;x++){const v=bins[Math.floor(x*512/768)],yy=88-v*86/255;if(x)sc.lineTo(x,yy);else sc.moveTo(x,yy);}sc.stroke();
+  wc.drawImage(water,0,0,768,289,0,1,768,289);const line=wc.createImageData(768,1);
+  for(let x=0;x<768;x++){
+    const v=bins[Math.floor(x*512/768)],level=Math.max(0,Math.min(255,Math.floor((v-floor)*255/73))),rgb=signalColor(level),i=x*4;
+    line.data[i]=rgb[0];line.data[i+1]=rgb[1];line.data[i+2]=rgb[2];line.data[i+3]=255;
+  }
+  wc.putImageData(line,0,0);
+}
+async function poll(){try{const r=await fetch('/api/sdr',{cache:'no-store'});if(!r.ok)throw Error('状态读取失败');const s=await r.json();if(s.boot_id!==boardBoot){boardBoot=s.boot_id;rxAfter=0;rxBoot='';decoded='';generation=-1;}config=s.config;await dashboard.update(s,dirty||busy);const wave=el('audio');wave.hidden=config.mode<2||config.mode>4;if(!wave.hidden){const ctx=wave.getContext('2d');ctx.clearRect(0,0,360,90);ctx.strokeStyle='#75ddff';ctx.beginPath();s.waveform.forEach((v,i)=>{const xx=i*360/63,yy=45-v*40/32768;if(i)ctx.lineTo(xx,yy);else ctx.moveTo(xx,yy);});ctx.stroke();}if(s.replay_source)replayPanelSelected=true;if(!dirty&&!busy)fill(config);if(generation!==(s.view_generation??s.generation)){generation=s.view_generation??s.generation;seq=-1;wc.clearRect(0,0,768,290);sc.clearRect(0,0,768,90);}captureStatus(s);if(!s.streaming&&dashboard.isSubGHz()){wc.clearRect(0,0,768,290);sc.clearRect(0,0,768,90);seq=-1;}el('live').textContent=s.replay_source?'SD 重放 · '+s.sd_file+' · '+s.sd_message:(s.streaming?'● 正在接收':'○ 暂无射频数据')+' · '+s.usb_status;paint(s);const center=s.active_frequency_hz,span=s.sample_rate_hz,axis=el('axis').children;const a=config.mode===7?[config.scan_start_hz,(config.scan_start_hz+config.scan_stop_hz)/2,config.scan_stop_hz]:[center-span/2,center,center+span/2];a.forEach((v,i)=>axis[i].textContent=(v/1e6).toFixed(6)+' MHz');el('detailsTitle').textContent=names[config.mode]+' 接收内容';let detail='';if(s.replay_source)detail=el('sdSummary').textContent+'\nSD 文件 IQ，经频谱/音频链路重放；不是当前射频接收。';else if(config.mode===6)detail=s.adsb_messages+' 条校验有效报文\n'+s.aircraft;else if(config.mode===8)detail=ookDetails(s);else if(config.mode===9||config.mode===7)detail=el('captureSummary').textContent+'\n丢样次数：'+s.record_gaps;else if(config.decode&&s.modem_content===2)detail='Codec2 700C / '+s.modem_mode+'\n已解码帧：'+s.voice_decoded+'\nCRC 错包：'+s.voice_crc_errors;else if(config.decode&&s.modem_content===1)detail='接收图像：'+s.image_rows+' / 96 行\n打开数字模式页查看图像。';else if(config.decode){const rr=await fetch('/api/rx?cursor='+rxAfter);if(rr.ok){const epoch=rr.headers.get('X-Content-Epoch')||'';if(epoch!==rxBoot){rxBoot=epoch;decoded='';}const bytes=await rr.arrayBuffer();decoded=(decoded+new TextDecoder().decode(bytes)).slice(-4000);rxAfter=rr.headers.get('X-Next-Cursor')||rxAfter;}detail=decoded||'等待所选数字模式的内容。模式、音频中心和 Codec2 设置位于“数字模式”页。';}else if(dashboard.isSubGHz())detail=(s.streaming?'RTL-SDR 实时接收':'等待实际 USB IQ')+' · '+(center/1e6).toFixed(6)+' MHz\n'+(config.mode===4?'NFM / 48 kHz 单声道 · 扬声器 '+(config.monitor?'开启':'关闭'):'实时频谱；尚未解码具体设备协议。');else detail='监听 '+names[config.mode]+' · '+(center/1e6).toFixed(6)+' MHz\n\n数字通信请选择 USB / LSB 并启用直接解码。原有 PSK、图像和 Codec2 控制仍在数字模式页面。';el('details').textContent=detail;el('metrics').textContent='IQ 块 '+s.iq_blocks+'　丢 IQ '+s.iq_drops+'　丢解码 PCM '+s.pcm_drops+'　丢播放 PCM '+s.audio_drops+'　DSP 最大 '+s.dsp_max_us+' μs　'+(s.sample_rate_hz/1e6).toFixed(3)+' MS/s';}catch(e){dashboard.disconnected();el('live').textContent='设备连接中断 · '+e.message;}finally{setTimeout(poll,350);}}
 poll();
 </script></html>

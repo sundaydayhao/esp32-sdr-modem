@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_crc.h"
 #include "psk_modes.h"
+#include "sdr_serial.h"
 
 static const char *TAG = "ui";
 static char s_serial_cmd[320];
@@ -439,7 +440,9 @@ static ui_event_t poll_serial_command(const display_state_t *display_state)
                 if (s_serial_cmd_len > 0) {
                     s_serial_cmd[s_serial_cmd_len] = '\0';
                     const char *cmd = s_serial_cmd[0] == '@' ? s_serial_cmd + 1 : s_serial_cmd;
-                    if (handle_capture_command(cmd)) {
+                    if (sdr_serial_command(cmd)) {
+                        /* Same service validation/interlock as the LCD and Web. */
+                    } else if (handle_capture_command(cmd)) {
                         ESP_LOGI(TAG, "serial capture command: %s", s_serial_cmd);
                     } else if (parse_serial_control_command(s_serial_cmd, display_state, &event)) {
                         ESP_LOGI(TAG, "serial control command: %s", s_serial_cmd);

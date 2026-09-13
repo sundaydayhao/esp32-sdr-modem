@@ -21,6 +21,7 @@ struct dsp_waterfall {
     size_t samples_used;
     size_t fft_windows_seen;
     uint32_t test_phase;
+    bool average_ready;
 };
 
 static const char *TAG = "dsp";
@@ -108,13 +109,14 @@ static void emit_fft_line(dsp_waterfall_t *dsp)
         float power = (re * re + im * im) / ((float)n * (float)n);
         float db = 10.0f * log10f(power + 1.0e-12f);
         if (dsp->cfg.average_shift > 0) {
-            float prev = dsp->avg_db[out];
+            float prev = dsp->average_ready ? dsp->avg_db[out] : db;
             db = prev + (db - prev) / (float)(1 << dsp->cfg.average_shift);
             dsp->avg_db[out] = db;
         }
         bins[out] = db_to_u8(dsp, db);
     }
 
+    dsp->average_ready=true;
     dsp->line_cb(bins, n, dsp->line_cb_ctx);
     heap_caps_free(bins);
 }
@@ -173,6 +175,7 @@ void dsp_waterfall_reset(dsp_waterfall_t *dsp)
 {
     if (!dsp) return;
     dsp->samples_used = dsp->fft_windows_seen = 0;
+    dsp->average_ready=false;
     for(size_t n=0;n<dsp->cfg.fft_size;++n)dsp->avg_db[n]=dsp->cfg.db_min;
 }
 

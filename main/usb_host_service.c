@@ -90,7 +90,7 @@ esp_err_t usb_host_service_start(void)
                                             "usb_host",
                                             4096,
                                             xTaskGetCurrentTaskHandle(),
-                                            5,
+                                            USB_HOST_DAEMON_PRIORITY,
                                             &s_host_task,
                                             0);
     ESP_RETURN_ON_FALSE(ok == pdTRUE, ESP_ERR_NO_MEM, TAG, "failed to create USB host task");
@@ -123,4 +123,11 @@ esp_err_t usb_host_service_power_on(void)
         vTaskDelay(pdMS_TO_TICKS(USB_ROOT_POWER_SETTLE_MS));
     }
     return ret;
+}
+
+esp_err_t usb_host_service_restart_port(void)
+{
+    if (!s_started) return ESP_ERR_INVALID_STATE;
+    s_root_powered = false;
+    return usb_host_service_power_on();
 }

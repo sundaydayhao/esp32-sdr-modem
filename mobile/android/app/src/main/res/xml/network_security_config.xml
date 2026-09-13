@@ -1,0 +1,4 @@
+<network-security-config>
+    <!-- Local AP API is HTTP; public map tiles are explicitly HTTPS. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

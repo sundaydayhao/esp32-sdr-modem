@@ -27,3 +27,25 @@ bool sdr_record_decode(const uint8_t h[SDR_RECORD_HEADER_BYTES],const uint8_t *i
     if(!sdr_config_validate(&result,NULL,0))return false;
     *c=result;*gaps=get(h+24);return true;
 }
+void sdr_record_sd_encode(uint8_t h[SDR_SD_HEADER_BYTES],const sdr_record_info_t *i)
+{
+    memcpy(h,"SDR3",4);put(h+4,i->bytes);put(h+8,i->config.frequency_hz);put(h+12,i->config.converter_hz);
+    put(h+16,i->config.frontend);put(h+20,SDR_IQ_RATE);put(h+24,i->gaps);put(h+28,i->crc32);
+    put(h+32,~crc(UINT32_MAX,h,32));
+}
+bool sdr_record_sd_decode(const uint8_t h[SDR_SD_HEADER_BYTES],sdr_record_info_t *i)
+{
+    if(!h||!i||memcmp(h,"SDR3",4)||get(h+32)!=~crc(UINT32_MAX,h,32)||get(h+20)!=SDR_IQ_RATE||
+        !get(h+4)||(get(h+4)&1)||get(h+4)>SDR_SD_MAX_BYTES||get(h+16)>=SDR_FRONTEND_COUNT)return false;
+    sdr_config_t c={.enabled=true,.mode=SDR_RECORD,.frontend=get(h+16),.frequency_hz=get(h+8),
+        .converter_hz=get(h+12),.volume=35,.scan_start_hz=88000000,.scan_stop_hz=108000000};
+    if(!sdr_config_validate(&c,NULL,0))return false;
+    *i=(sdr_record_info_t){.config=c,.bytes=get(h+4),.gaps=get(h+24),.crc32=get(h+28)};
+    return true;
+}
+bool sdr_record_sd_name(const char *name)
+{
+    if(!name||strlen(name)!=11||name[0]!='I'||name[1]!='Q'||strcmp(name+8,".IQ"))return false;
+    for(unsigned n=2;n<8;++n)if(name[n]<'0'||name[n]>'9')return false;
+    return true;
+}

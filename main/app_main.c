@@ -494,7 +494,8 @@ static void tx_task(void *arg)
             }
         } else {
             bool voice = content_play_audio();
-            bool monitor = sdr_service_play_audio(config.content == CONTENT_AUDIO || voice);
+            bool monitor = sdr_service_play_audio(voice ||
+                (config.content == CONTENT_AUDIO && sdr_service_decode_enabled()));
             if (!voice && !monitor) vTaskDelay(pdMS_TO_TICKS(2));
         }
         if (config.draining && !psk_tx_active(tx)) s_tx_finished_epoch = config.epoch;
@@ -550,6 +551,9 @@ static void audio_task(void *arg)
         size_t count = sdr_input ? sdr_service_read_audio(s_audio_samples,
             sizeof(s_audio_samples)/sizeof(s_audio_samples[0]), 20) :
             audio_input_read(s_audio_samples, sizeof(s_audio_samples)/sizeof(s_audio_samples[0]), 50);
+        /* The source may change while a blocking read is in flight. Reset
+         * the modem on the next iteration before accepting the new source. */
+        if (source_generation != sdr_service_generation()) continue;
         if (count) {
             const int64_t block_start = esp_timer_get_time();
             if (!sdr_input) content_capture(s_audio_samples, count);

@@ -14,8 +14,10 @@ size_t audio_output_capacity(void);
 void audio_output_clear(void);
 esp_err_t audio_output_set_codec_gain(uint8_t dac_volume, uint8_t headphone_volume);
 
-/* Capture the post-decimation stream used by the decoder.  This makes the
- * board audio path reproducible in the native WAV regression tool. */
+/* Capture the selected RX PCM: line ADC when SDR is disabled, otherwise
+ * demodulated SDR audio before monitor volume. SDR configuration changes
+ * stop the capture so a dump cannot silently combine different stations. */
+void audio_input_capture_feed(const int16_t *samples, size_t count);
 esp_err_t audio_input_capture_start(size_t max_samples);
 void audio_input_capture_stop(void);
 int audio_input_capture_active(void);

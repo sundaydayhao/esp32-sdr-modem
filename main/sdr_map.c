@@ -2,6 +2,22 @@
 #include "sdr_map_data.h"
 #include <math.h>
 #include <stdlib.h>
+#include "sdr_map_region.inc"
+const sdr_map_place_t *sdr_map_places(size_t *count){if(count)*count=sizeof(regional_places)/sizeof(regional_places[0]);return regional_places;}
+bool sdr_map_has_detail(const sdr_map_view_t *v){return v&&v->latitude>=22.40&&v->latitude<=22.85&&v->longitude>=113.75&&v->longitude<=114.45;}
+double sdr_map_meters_per_pixel(const sdr_map_view_t *v,int w){return v&&w>0?v->span*111320*cos(v->latitude*3.141592653589793/180)/w:0;}
+const sdr_map_place_t *sdr_map_nearest(double lat,double lon,double *km)
+{
+    if(!isfinite(lat)||!isfinite(lon))return NULL;
+    const sdr_map_place_t *best=NULL;double distance=30;
+    for(size_t n=0;n<sizeof(regional_places)/sizeof(regional_places[0]);++n){
+        const sdr_map_place_t *p=regional_places+n;
+        double d=hypot((lat-p->latitude)*111.32,(lon-p->longitude)*111.32*cos(lat*3.141592653589793/180));
+        if(d<distance){best=p;distance=d;}
+    }
+    if(km)*km=distance;
+    return best;
+}
 static double wrap(double n)
 {
     n = fmod(n + 180, 360);
@@ -34,7 +50,7 @@ void sdr_map_zoom(sdr_map_view_t *v, double factor)
 {
     if (!v || !isfinite(factor) || factor <= 0)
         return;
-    v->span = clamp(v->span * factor, .25, 360);
+    v->span = clamp(v->span * factor, .01, 360);
     v->latitude = clamp(v->latitude, -85, 85);
     v->longitude = wrap(v->longitude);
 }
@@ -62,7 +78,7 @@ void sdr_map_fit(sdr_map_view_t *v, const adsb_aircraft_t *a, size_t count)
         return;
     v->longitude = wrap(ref + (lo + hi) / 2);
     v->latitude = (bottom + top) / 2;
-    v->span = clamp(fmax((hi - lo) * 1.5, (top - bottom) * 2.5), 2, 360);
+    v->span = clamp(fmax((hi - lo) * 1.5, (top - bottom) * 2.5), .2, 360);
     sdr_map_zoom(v, 1);
 }
 static unsigned code(double x, double y, int w, int h)
@@ -139,14 +155,15 @@ void sdr_map_draw(uint16_t *p, int w, int h, const sdr_map_view_t *v)
         return;
     for (int n = 0; n < w * h; n++)
         p[n] = 0x08E3;
-    const double step = v->span > 80 ? 30 : v->span > 20 ? 10 : v->span > 5 ? 2 : v->span > 1 ? 0.5 : 0.1;
-    for (double lon = -180; lon < 180; lon += step)
+    const double step = v->span > 80 ? 30 : v->span > 20 ? 10 : v->span > 5 ? 2 : v->span > 1 ? 0.5 : v->span>.1?.05:.005;
+    for (double lon = floor((v->longitude-v->span/2)/step)*step; lon <=v->longitude+v->span/2; lon += step)
     {
         double x, y;
         point(v, w, h, v->latitude, lon, &x, &y);
         line(p, w, h, x, 0, x, h - 1, 0x1926);
     }
-    for (double lat = -90; lat <= 90; lat += step)
+    double vertical=v->span*h/w;
+    for (double lat = floor((v->latitude-vertical/2)/step)*step; lat <=v->latitude+vertical/2; lat += step)
     {
         double x, y;
         point(v, w, h, lat, v->longitude, &x, &y);
@@ -168,6 +185,24 @@ void sdr_map_draw(uint16_t *p, int w, int h, const sdr_map_view_t *v)
         have = true;
         px = x;
         py = y;
+    }
+    /* Region vertices use 1e-5 degree precision (~1 m); zoom never invents detail.
+     * Cull in integer coordinates before projection. No allocation or I/O here. */
+    if(v->span<4){
+        int32_t west=(v->longitude-v->span/2)*100000,east=(v->longitude+v->span/2)*100000;
+        int32_t south=(v->latitude-vertical/2)*100000,north=(v->latitude+vertical/2)*100000;
+        const uint16_t colors[]={0x5C15,0x32AF,0xEF5D,0xB46B,0x6B91,0x3A2B};
+        for(size_t n=0;n<sizeof(regional_features)/sizeof(regional_features[0]);++n){
+            unsigned kind=regional_features[n].kind;
+            if((v->span>.8&&kind>=4)||(v->span>.18&&kind>=5)||regional_features[n].west>east||regional_features[n].east<west||regional_features[n].south>north||regional_features[n].north<south)continue;
+            double last_x=0,last_y=0;
+            for(unsigned k=0;k<regional_features[n].count;++k){
+                const int32_t *q=regional_points[regional_features[n].start+k];double xx,yy;
+                point(v,w,h,q[1]/100000.0,q[0]/100000.0,&xx,&yy);
+                if(k)line(p,w,h,last_x,last_y,xx,yy,colors[kind]);
+                last_x=xx;last_y=yy;
+            }
+        }
     }
 }
 

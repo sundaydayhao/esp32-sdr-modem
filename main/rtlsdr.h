@@ -33,6 +33,8 @@ esp_err_t rtlsdr_start(rtlsdr_t **out_dev,
 void rtlsdr_stop(rtlsdr_t *dev);
 /* All tuning changes are one transaction, applied with bulk transfers drained. */
 esp_err_t rtlsdr_configure(rtlsdr_t *dev, const rtlsdr_config_t *config);
+/* Queue a root-port restart; the owner drains and closes all transfers first. */
+esp_err_t rtlsdr_reconnect(rtlsdr_t *dev);
 
 esp_err_t rtlsdr_set_center_freq_hz(rtlsdr_t *dev, uint32_t center_freq_hz);
 esp_err_t rtlsdr_set_sample_rate_hz(rtlsdr_t *dev, uint32_t sample_rate_hz);

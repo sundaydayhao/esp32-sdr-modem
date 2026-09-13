@@ -13,9 +13,11 @@ const dashboard = (() => {
     $('aircraftPanel').hidden = workspace !== 1;
     $('radioData').hidden = workspace === 1;
     $('presetPanel').hidden = workspace !== 2;
+    $('capturePanel').hidden = workspace !== 3;
   }
   function modeChanged(m) {
     if (m === 6) workspace = 1;
+    else if (m === 7 || m === 9) workspace = 3;
     else if (m === 8) workspace = 2;
     else if (workspace !== 2 || ![4,5,7,9].includes(m)) workspace = m === 7 || m === 9 ? 3 : 0;
     layout();
@@ -30,6 +32,8 @@ const dashboard = (() => {
     $('scanStart').value = (p.start_hz / 1e6).toFixed(6);
     $('scanStop').value = (p.stop_hz / 1e6).toFixed(6);
     $('decode').checked = $('monitor').checked = false;
+    $('enabled').checked = true;
+    $('subAnalysis').value = String(p.mode);
     $('bandInfo').textContent = p.usage + '\n' + p.analysis;
     workspace = 2; layout(); markDraft();
     $('message').textContent = '已选择接收预设，点击“应用设置”调谐。';
@@ -43,6 +47,16 @@ const dashboard = (() => {
     markDraft(); layout();
   }));
   $('bandPreset').addEventListener('change', selectPreset);
+  function selectAnalysis(mode) {
+    $('subAnalysis').value=String(mode);$('mode').selectedIndex=mode;
+    $('enabled').checked=true;$('decode').checked=false;$('monitor').checked=mode===4;
+    if(mode===7||mode===9)$('captureKind').value=String(mode);
+    $('captureStart').value=$('scanStart').value;$('captureStop').value=$('scanStop').value;
+    modeChanged(mode);markDraft();
+    $('message').textContent='已选择分析方式，点击“应用设置”连接 RTL-SDR。';
+  }
+  $('subAnalysis').addEventListener('change',()=>selectAnalysis(Number($('subAnalysis').value)));
+  $('subCapture').onclick=()=>selectAnalysis(9);$('subScan').onclick=()=>selectAnalysis(7);
   function fit() {
     const a = planes.filter(valid); if (!a.length) return;
     const ref = a[0].longitude, lons = a.map(p => wrap(p.longitude - ref)), lats = a.map(p => p.latitude);
@@ -102,17 +116,21 @@ const dashboard = (() => {
   }
   async function update(s,draft) {
     if(!draft){
-      modeChanged(s.config.mode);
+      if(s.replay_source){workspace=3;layout();}else modeChanged(s.config.mode);
       const n=presets.findIndex(p=>s.config.frequency_hz>=p.start_hz&&s.config.frequency_hz<=p.stop_hz);
       if(n>=0){$('bandPreset').value=String(n);$('bandInfo').textContent=presets[n].usage+'\n'+presets[n].analysis;}
+      if(!s.replay_source&&n>=0&&[4,5,8].includes(s.config.mode)){workspace=2;layout();}
+      $('subAnalysis').value=String(s.config.mode);
     }
+    const live=s.config.enabled&&s.streaming;
+    $('subStatus').textContent=(live?'RTL-SDR 正在接收':'等待 RTL-SDR 实时 IQ')+' · '+(s.active_frequency_hz/1e6).toFixed(6)+' MHz · '+(s.sample_rate_hz/1000).toFixed(0)+' kS/s · IQ 块 '+s.iq_blocks+' · 丢块 '+s.iq_drops;
     if(workspace!==1)return;
     if(s.config.mode!==6){planes=[];rows();paint();$('aircraftSummary').textContent='点击应用设置，切换到 1090 MHz ADS-B 接收。';return;}
     const r=await fetch('/api/aircraft',{cache:'no-store'});if(!r.ok)throw Error('飞机数据读取失败');
     const data=await r.json();planes=data.boot_id===s.boot_id?data.aircraft:[];
     if(auto)fit();rows();paint();$('aircraftSummary').textContent=planes.length+' 架飞机 / '+s.adsb_messages+' 条有效报文'+(s.streaming?'':' / 暂无射频数据');
   }
-  function disconnected(){planes=[];rows();paint();}
+  function disconnected(){planes=[];rows();paint();$('subStatus').textContent='设备连接中断，等待 RTL-SDR 状态';}
   layout();init();
-  return {update,modeChanged,disconnected};
+  return {update,modeChanged,disconnected,isSubGHz:()=>workspace===2,showCapture:()=>{workspace=3;layout();}};
 })();

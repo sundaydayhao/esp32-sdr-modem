@@ -33,7 +33,7 @@ static volatile size_t s_capture_limit;
 static volatile size_t s_capture_count;
 static volatile bool s_capture_active;
 
-static void capture_samples(const int16_t *samples, size_t count)
+void audio_input_capture_feed(const int16_t *samples, size_t count)
 {
     if (!samples || count == 0) return;
     portENTER_CRITICAL(&s_capture_mux);
@@ -160,7 +160,7 @@ size_t audio_input_read(int16_t *samples, size_t max_samples, uint32_t timeout_m
     const size_t got_samples = read_count;
     const size_t out_count = audio_decim_process(&s_decim_state, s_raw_samples,
                                                  got_samples, samples, (uint32_t)decim);
-    capture_samples(samples, out_count);
+    audio_input_capture_feed(samples, out_count);
 
 #if BOARD_AUDIO_DEBUG_LOGS
     static int64_t last_log_us;
